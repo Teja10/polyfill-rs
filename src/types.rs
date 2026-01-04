@@ -261,9 +261,9 @@ pub struct MarketSnapshot {
 /// It uses Decimal for precision and human readability.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BookLevel {
-    #[serde(with = "rust_decimal::serde::str")]
+    #[serde(with = "rust_decimal::serde::float")]
     pub price: Decimal,
-    #[serde(with = "rust_decimal::serde::str")]
+    #[serde(with = "rust_decimal::serde::float")]
     pub size: Decimal,
 }
 
@@ -575,9 +575,9 @@ pub struct Market {
     pub active: bool,
     pub closed: bool,
     pub question_id: String,
-    #[serde(with = "rust_decimal::serde::str")]
+    #[serde(with = "rust_decimal::serde::float")]
     pub minimum_order_size: Decimal,
-    #[serde(with = "rust_decimal::serde::str")]
+    #[serde(with = "rust_decimal::serde::float")]
     pub minimum_tick_size: Decimal,
     pub description: String,
     pub category: Option<String>,
@@ -585,7 +585,7 @@ pub struct Market {
     pub game_start_time: Option<String>,
     pub question: String,
     pub market_slug: String,
-    #[serde(with = "rust_decimal::serde::str")]
+    #[serde(with = "rust_decimal::serde::float")]
     pub seconds_delay: Decimal,
     pub icon: String,
     pub fpmm: String,
@@ -598,9 +598,9 @@ pub struct Market {
     pub accepting_orders: bool,
     #[serde(default)]
     pub accepting_order_timestamp: Option<String>,
-    #[serde(with = "rust_decimal::serde::str", default)]
+    #[serde(with = "rust_decimal::serde::float", default)]
     pub maker_base_fee: Decimal,
-    #[serde(with = "rust_decimal::serde::str", default)]
+    #[serde(with = "rust_decimal::serde::float", default)]
     pub taker_base_fee: Decimal,
     #[serde(default)]
     pub notifications_enabled: bool,
@@ -621,7 +621,7 @@ pub struct Market {
 pub struct Token {
     pub token_id: String,
     pub outcome: String,
-    #[serde(with = "rust_decimal::serde::str", default)]
+    #[serde(with = "rust_decimal::serde::float", default)]
     pub price: Decimal,
     #[serde(default)]
     pub winner: bool,
@@ -739,12 +739,117 @@ impl WssChannelType {
     }
 }
 
+// ============================================================================
+// LIVE DATA WEBSOCKET TYPES (wss://ws-live-data.polymarket.com)
+// ============================================================================
+
+/// Live data feed topics
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum LiveTopic {
+    /// Chainlink crypto price feeds
+    Chainlink,
+}
+
+impl LiveTopic {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            LiveTopic::Chainlink => "crypto_prices_chainlink",
+        }
+    }
+}
+
+/// Crypto symbols for price feeds
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Symbol {
+    BTC,
+    ETH,
+    XRP,
+    SOL,
+}
+
+impl Symbol {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Symbol::BTC => "btc/usd",
+            Symbol::ETH => "eth/usd",
+            Symbol::XRP => "xrp/usd",
+            Symbol::SOL => "sol/usd",
+        }
+    }
+}
+
+/// Live data subscription for wss://ws-live-data.polymarket.com
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LiveDataSubscription {
+    pub topic: String,
+    #[serde(rename = "type")]
+    pub sub_type: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub filters: Option<String>,
+}
+
+impl LiveDataSubscription {
+    /// Create a price feed subscription
+    pub fn price(topic: LiveTopic, symbol: Symbol) -> Self {
+        Self {
+            topic: topic.as_str().to_string(),
+            sub_type: "*".to_string(),
+            filters: Some(format!(r#"{{"symbol":"{}"}}"#, symbol.as_str())),
+        }
+    }
+}
+
+/// Live data subscription request
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LiveDataRequest {
+    pub action: String,
+    pub subscriptions: Vec<LiveDataSubscription>,
+}
+
+/// Live data message from WebSocket
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LiveDataMessage {
+    pub topic: String,
+    #[serde(rename = "type")]
+    pub msg_type: String,
+    pub timestamp: u64,
+    pub payload: serde_json::Value,
+}
+
+/// Parsed price update from Chainlink feed
+#[derive(Debug, Clone)]
+pub struct PriceUpdate {
+    pub symbol: Symbol,
+    pub price: f64,
+    pub timestamp: u64,
+}
+
+impl LiveDataMessage {
+    /// Try to parse as a price update
+    pub fn as_price_update(&self) -> Option<PriceUpdate> {
+        let symbol_str = self.payload.get("symbol")?.as_str()?;
+        let symbol = match symbol_str {
+            "btc/usd" => Symbol::BTC,
+            "eth/usd" => Symbol::ETH,
+            "xrp/usd" => Symbol::XRP,
+            "sol/usd" => Symbol::SOL,
+            _ => return None,
+        };
+        let price = self.payload.get("value")?.as_f64()?;
+        Some(PriceUpdate {
+            symbol,
+            price,
+            timestamp: self.timestamp,
+        })
+    }
+}
+
 /// Price quote response
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Quote {
     pub token_id: String,
     pub side: Side,
-    #[serde(with = "rust_decimal::serde::str")]
+    #[serde(with = "rust_decimal::serde::float")]
     pub price: Decimal,
     pub timestamp: DateTime<Utc>,
 }
@@ -850,15 +955,15 @@ pub struct OpenOrder {
     pub id: String,
     pub status: String,
     pub market: String,
-    #[serde(with = "rust_decimal::serde::str")]
+    #[serde(with = "rust_decimal::serde::float")]
     pub original_size: Decimal,
     pub outcome: String,
     pub maker_address: String,
     pub owner: String,
-    #[serde(with = "rust_decimal::serde::str")]
+    #[serde(with = "rust_decimal::serde::float")]
     pub price: Decimal,
     pub side: Side,
-    #[serde(with = "rust_decimal::serde::str")]
+    #[serde(with = "rust_decimal::serde::float")]
     pub size_matched: Decimal,
     pub asset_id: String,
     #[serde(deserialize_with = "crate::decode::deserializers::number_from_string")]
@@ -873,9 +978,9 @@ pub struct OpenOrder {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BalanceAllowance {
     pub asset_id: String,
-    #[serde(with = "rust_decimal::serde::str")]
+    #[serde(with = "rust_decimal::serde::float")]
     pub balance: Decimal,
-    #[serde(with = "rust_decimal::serde::str")]
+    #[serde(with = "rust_decimal::serde::float")]
     pub allowance: Decimal,
 }
 
@@ -978,25 +1083,25 @@ pub struct ApiKeysResponse {
 
 #[derive(Debug, Deserialize)]
 pub struct MidpointResponse {
-    #[serde(with = "rust_decimal::serde::str")]
+    #[serde(with = "rust_decimal::serde::float")]
     pub mid: Decimal,
 }
 
 #[derive(Debug, Deserialize)]
 pub struct PriceResponse {
-    #[serde(with = "rust_decimal::serde::str")]
+    #[serde(with = "rust_decimal::serde::float")]
     pub price: Decimal,
 }
 
 #[derive(Debug, Deserialize)]
 pub struct SpreadResponse {
-    #[serde(with = "rust_decimal::serde::str")]
+    #[serde(with = "rust_decimal::serde::float")]
     pub spread: Decimal,
 }
 
 #[derive(Debug, Deserialize)]
 pub struct TickSizeResponse {
-    #[serde(with = "rust_decimal::serde::str")]
+    #[serde(with = "rust_decimal::serde::float")]
     pub minimum_tick_size: Decimal,
 }
 
@@ -1024,17 +1129,17 @@ pub struct OrderBookSummary {
 
 #[derive(Debug, Deserialize)]
 pub struct OrderSummary {
-    #[serde(with = "rust_decimal::serde::str")]
+    #[serde(with = "rust_decimal::serde::float")]
     pub price: Decimal,
-    #[serde(with = "rust_decimal::serde::str")]
+    #[serde(with = "rust_decimal::serde::float")]
     pub size: Decimal,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct MarketsResponse {
-    #[serde(with = "rust_decimal::serde::str")]
+    #[serde(with = "rust_decimal::serde::float")]
     pub limit: Decimal,
-    #[serde(with = "rust_decimal::serde::str")]
+    #[serde(with = "rust_decimal::serde::float")]
     pub count: Decimal,
     pub next_cursor: Option<String>,
     pub data: Vec<Market>,
@@ -1042,9 +1147,9 @@ pub struct MarketsResponse {
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct SimplifiedMarketsResponse {
-    #[serde(with = "rust_decimal::serde::str")]
+    #[serde(with = "rust_decimal::serde::float")]
     pub limit: Decimal,
-    #[serde(with = "rust_decimal::serde::str")]
+    #[serde(with = "rust_decimal::serde::float")]
     pub count: Decimal,
     pub next_cursor: Option<String>,
     pub data: Vec<SimplifiedMarket>,

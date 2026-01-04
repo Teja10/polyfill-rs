@@ -362,7 +362,7 @@ impl OrderBook {
             // }
 
             // AFTER (fast, ~2ns, pure integer):
-            if tick_size_ticks > 0 && !delta.price.is_multiple_of(tick_size_ticks) {
+            if tick_size_ticks > 0 && delta.price % tick_size_ticks != 0 {
                 // Price is not aligned to tick size - reject the update
                 warn!(
                     "Rejecting misaligned price: {} not divisible by tick size {}",
@@ -458,6 +458,28 @@ impl OrderBook {
             self.asks.remove(&price_ticks); // No more sellers at this price
         } else {
             self.asks.insert(price_ticks, size_units); // Update total size at this price
+        }
+    }
+
+    /// Clear all bids and asks from the book
+    ///
+    /// Used when applying a full snapshot (e.g., from Coinbase level2)
+    pub fn clear(&mut self) {
+        self.bids.clear();
+        self.asks.clear();
+        self.timestamp = Utc::now();
+    }
+
+    /// Apply a single level update directly (bypasses sequence/token validation)
+    ///
+    /// This is for use with external feeds like Coinbase where we don't have
+    /// the same delta format as Polymarket. Size of 0 removes the level.
+    ///
+    /// PERFORMANCE: Pure integer operations, no allocations
+    pub fn apply_level_fast(&mut self, side: Side, price: Price, size: Qty) {
+        match side {
+            Side::BUY => self.apply_bid_delta_fast(price, size),
+            Side::SELL => self.apply_ask_delta_fast(price, size),
         }
     }
 

@@ -130,6 +130,13 @@ pub use crate::types::{
     WssAuth,
     WssChannelType,
     WssSubscription,
+    // Live data types
+    LiveDataMessage,
+    LiveDataRequest,
+    LiveDataSubscription,
+    LiveTopic,
+    PriceUpdate,
+    Symbol,
 };
 
 // Re-export client
@@ -145,7 +152,11 @@ pub use crate::errors::{PolyfillError, Result};
 pub use crate::book::{OrderBook as OrderBookImpl, OrderBookManager};
 pub use crate::decode::Decoder;
 pub use crate::fill::{FillEngine, FillResult};
-pub use crate::stream::{MarketStream, StreamManager, WebSocketStream};
+pub use crate::stream::{
+    BookChange, BookLevel, BookMessage, LiveDataStream, MarketStream, StreamManager,
+    WebSocketStream,
+};
+pub use crate::transport::{RawMessage, WsTransport};
 
 // Re-export utilities
 pub use crate::utils::{crypto, math, rate_limit, retry, time, url};
@@ -155,6 +166,7 @@ pub mod auth;
 pub mod book;
 pub mod buffer_pool;
 pub mod client;
+pub mod coinbase;
 pub mod connection_manager;
 pub mod decode;
 pub mod dns_cache;
@@ -163,6 +175,7 @@ pub mod fill;
 pub mod http_config;
 pub mod orders;
 pub mod stream;
+pub mod transport;
 pub mod types;
 pub mod utils;
 

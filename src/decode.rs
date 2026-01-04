@@ -124,9 +124,9 @@ pub struct RawOrderBookResponse {
 
 #[derive(Debug, Deserialize)]
 pub struct RawBookLevel {
-    #[serde(with = "rust_decimal::serde::str")]
+    #[serde(with = "rust_decimal::serde::float")]
     pub price: Decimal,
-    #[serde(with = "rust_decimal::serde::str")]
+    #[serde(with = "rust_decimal::serde::float")]
     pub size: Decimal,
 }
 
@@ -142,11 +142,11 @@ pub struct RawOrderResponse {
     #[serde(rename = "type")]
     pub order_type: OrderType,
     pub side: Side,
-    #[serde(with = "rust_decimal::serde::str")]
+    #[serde(with = "rust_decimal::serde::float")]
     pub original_size: Decimal,
-    #[serde(with = "rust_decimal::serde::str")]
+    #[serde(with = "rust_decimal::serde::float")]
     pub price: Decimal,
-    #[serde(with = "rust_decimal::serde::str")]
+    #[serde(with = "rust_decimal::serde::float")]
     pub size_matched: Decimal,
     #[serde(deserialize_with = "deserializers::number_from_string")]
     pub expiration: u64,
@@ -160,9 +160,9 @@ pub struct RawTradeResponse {
     pub market: String,
     pub asset_id: String,
     pub side: Side,
-    #[serde(with = "rust_decimal::serde::str")]
+    #[serde(with = "rust_decimal::serde::float")]
     pub price: Decimal,
-    #[serde(with = "rust_decimal::serde::str")]
+    #[serde(with = "rust_decimal::serde::float")]
     pub size: Decimal,
     pub maker_address: String,
     pub taker_address: String,
@@ -180,9 +180,9 @@ pub struct RawMarketResponse {
     pub description: String,
     pub category: Option<String>,
     pub end_date_iso: Option<String>,
-    #[serde(with = "rust_decimal::serde::str")]
+    #[serde(with = "rust_decimal::serde::float")]
     pub minimum_order_size: Decimal,
-    #[serde(with = "rust_decimal::serde::str")]
+    #[serde(with = "rust_decimal::serde::float")]
     pub minimum_tick_size: Decimal,
 }
 

@@ -4,9 +4,10 @@
 //! real-time market data and order updates.
 
 use crate::errors::{PolyfillError, Result};
+use crate::transport::{RawMessage, WsTransport};
 use crate::types::*;
 use chrono::Utc;
-use futures::{SinkExt, Stream, StreamExt};
+use futures::{Future, Stream, StreamExt};
 use serde_json::Value;
 use std::pin::Pin;
 use std::task::{Context, Poll};
@@ -32,14 +33,8 @@ pub trait MarketStream: Stream<Item = Result<StreamMessage>> + Send + Sync {
 #[derive(Debug)]
 #[allow(dead_code)]
 pub struct WebSocketStream {
-    /// WebSocket connection
-    connection: Option<
-        tokio_tungstenite::WebSocketStream<
-            tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
-        >,
-    >,
-    /// URL for the WebSocket connection
-    url: String,
+    /// WebSocket transport
+    transport: WsTransport,
     /// Authentication credentials
     auth: Option<WssAuth>,
     /// Current subscriptions
@@ -48,10 +43,6 @@ pub struct WebSocketStream {
     tx: mpsc::UnboundedSender<StreamMessage>,
     /// Message receiver
     rx: mpsc::UnboundedReceiver<StreamMessage>,
-    /// Connection statistics
-    stats: StreamStats,
-    /// Reconnection configuration
-    reconnect_config: ReconnectConfig,
 }
 
 /// Stream statistics
@@ -72,6 +63,10 @@ pub struct ReconnectConfig {
     pub base_delay: std::time::Duration,
     pub max_delay: std::time::Duration,
     pub backoff_multiplier: f64,
+    /// Timeout for initial connection attempts (default: 10 seconds)
+    pub connect_timeout: std::time::Duration,
+    /// Staleness threshold - trigger reconnect if no activity within this duration (default: 60 seconds)
+    pub heartbeat_timeout: std::time::Duration,
 }
 
 impl Default for ReconnectConfig {
@@ -81,8 +76,29 @@ impl Default for ReconnectConfig {
             base_delay: std::time::Duration::from_secs(1),
             max_delay: std::time::Duration::from_secs(60),
             backoff_multiplier: 2.0,
+            connect_timeout: std::time::Duration::from_secs(10),
+            heartbeat_timeout: std::time::Duration::from_secs(60),
         }
     }
+}
+
+/// Result of a successful reconnection attempt
+pub struct ReconnectResult {
+    /// New connected transport
+    pub transport: WsTransport,
+}
+
+/// Type alias for the boxed reconnection future
+type ReconnectFuture = Pin<Box<dyn Future<Output = Result<ReconnectResult>> + Send>>;
+
+/// Connection state for resilient streams
+pub enum ConnectionState {
+    /// Connected and receiving messages
+    Connected,
+    /// Reconnection in progress
+    Reconnecting(ReconnectFuture),
+    /// Permanently failed after max retries
+    Failed,
 }
 
 impl WebSocketStream {
@@ -91,21 +107,11 @@ impl WebSocketStream {
         let (tx, rx) = mpsc::unbounded_channel();
 
         Self {
-            connection: None,
-            url: url.to_string(),
+            transport: WsTransport::new(url),
             auth: None,
             subscriptions: Vec::new(),
             tx,
             rx,
-            stats: StreamStats {
-                messages_received: 0,
-                messages_sent: 0,
-                errors: 0,
-                last_message_time: None,
-                connection_uptime: std::time::Duration::ZERO,
-                reconnect_count: 0,
-            },
-            reconnect_config: ReconnectConfig::default(),
         }
     }
 
@@ -117,45 +123,18 @@ impl WebSocketStream {
 
     /// Connect to the WebSocket
     async fn connect(&mut self) -> Result<()> {
-        let (ws_stream, _) = tokio_tungstenite::connect_async(&self.url)
-            .await
-            .map_err(|e| {
-                PolyfillError::stream(
-                    format!("WebSocket connection failed: {}", e),
-                    crate::errors::StreamErrorKind::ConnectionFailed,
-                )
-            })?;
-
-        self.connection = Some(ws_stream);
-        info!("Connected to WebSocket stream at {}", self.url);
-        Ok(())
+        self.transport.connect().await
     }
 
     /// Send a message to the WebSocket
     async fn send_message(&mut self, message: Value) -> Result<()> {
-        if let Some(connection) = &mut self.connection {
-            let text = serde_json::to_string(&message).map_err(|e| {
-                PolyfillError::parse(format!("Failed to serialize message: {}", e), None)
-            })?;
-
-            let ws_message = tokio_tungstenite::tungstenite::Message::Text(text);
-            connection.send(ws_message).await.map_err(|e| {
-                PolyfillError::stream(
-                    format!("Failed to send message: {}", e),
-                    crate::errors::StreamErrorKind::MessageCorrupted,
-                )
-            })?;
-
-            self.stats.messages_sent += 1;
-        }
-
-        Ok(())
+        self.transport.send(&message).await
     }
 
     /// Subscribe to market data using official Polymarket WebSocket API
     pub async fn subscribe_async(&mut self, subscription: WssSubscription) -> Result<()> {
         // Ensure connection
-        if self.connection.is_none() {
+        if !self.transport.is_connected() {
             self.connect().await?;
         }
 
@@ -210,6 +189,44 @@ impl WebSocketStream {
         self.subscribe_async(subscription).await
     }
 
+    /// Subscribe to public orderbook (no authentication required)
+    ///
+    /// Use with `wss://ws-subscriptions-clob.polymarket.com/ws/market`
+    ///
+    /// # Example
+    /// ```rust,no_run
+    /// use polyfill_rs::WsTransport;
+    ///
+    /// # async fn example() -> Result<(), Box<dyn std::error::Error>> {
+    /// let mut transport = WsTransport::new("wss://ws-subscriptions-clob.polymarket.com/ws/market");
+    /// transport.connect().await?;
+    ///
+    /// // Subscribe to orderbook for specific assets
+    /// let subscribe = serde_json::json!({
+    ///     "assets_ids": ["token_id_1", "token_id_2"],
+    ///     "type": "market"
+    /// });
+    /// transport.send(&subscribe).await?;
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub async fn subscribe_public_orderbook(&mut self, asset_ids: Vec<String>) -> Result<()> {
+        // Ensure connection
+        if !self.transport.is_connected() {
+            self.connect().await?;
+        }
+
+        // Public orderbook uses different subscription format (no auth)
+        let message = serde_json::json!({
+            "assets_ids": asset_ids,
+            "type": "market"
+        });
+
+        self.send_message(message).await?;
+        info!("Subscribed to public orderbook for {} assets", asset_ids.len());
+        Ok(())
+    }
+
     /// Unsubscribe from market data
     pub async fn unsubscribe_async(&mut self, token_ids: &[String]) -> Result<()> {
         // Note: Polymarket WebSocket API doesn't seem to have explicit unsubscribe
@@ -239,48 +256,15 @@ impl WebSocketStream {
 
     /// Handle incoming WebSocket messages
     #[allow(dead_code)]
-    async fn handle_message(
-        &mut self,
-        message: tokio_tungstenite::tungstenite::Message,
-    ) -> Result<()> {
-        match message {
-            tokio_tungstenite::tungstenite::Message::Text(text) => {
-                debug!("Received WebSocket message: {}", text);
+    fn handle_text_message(&mut self, text: &str) -> Result<()> {
+        debug!("Received WebSocket message: {}", text);
 
-                // Parse the message according to Polymarket's format
-                let stream_message = self.parse_polymarket_message(&text)?;
+        // Parse the message according to Polymarket's format
+        let stream_message = self.parse_polymarket_message(text)?;
 
-                // Send to internal channel
-                if let Err(e) = self.tx.send(stream_message) {
-                    error!("Failed to send message to internal channel: {}", e);
-                }
-
-                self.stats.messages_received += 1;
-                self.stats.last_message_time = Some(Utc::now());
-            },
-            tokio_tungstenite::tungstenite::Message::Close(_) => {
-                info!("WebSocket connection closed by server");
-                self.connection = None;
-            },
-            tokio_tungstenite::tungstenite::Message::Ping(data) => {
-                // Respond with pong
-                if let Some(connection) = &mut self.connection {
-                    let pong = tokio_tungstenite::tungstenite::Message::Pong(data);
-                    if let Err(e) = connection.send(pong).await {
-                        error!("Failed to send pong: {}", e);
-                    }
-                }
-            },
-            tokio_tungstenite::tungstenite::Message::Pong(_) => {
-                // Handle pong if needed
-                debug!("Received pong");
-            },
-            tokio_tungstenite::tungstenite::Message::Binary(_) => {
-                warn!("Received binary message (not supported)");
-            },
-            tokio_tungstenite::tungstenite::Message::Frame(_) => {
-                warn!("Received raw frame (not supported)");
-            },
+        // Send to internal channel
+        if let Err(e) = self.tx.send(stream_message) {
+            error!("Failed to send message to internal channel: {}", e);
         }
 
         Ok(())
@@ -400,48 +384,15 @@ impl WebSocketStream {
     /// Reconnect with exponential backoff
     #[allow(dead_code)]
     async fn reconnect(&mut self) -> Result<()> {
-        let mut delay = self.reconnect_config.base_delay;
-        let mut retries = 0;
+        self.transport.reconnect().await?;
 
-        while retries < self.reconnect_config.max_retries {
-            warn!("Attempting to reconnect (attempt {})", retries + 1);
-
-            match self.connect().await {
-                Ok(()) => {
-                    info!("Successfully reconnected");
-                    self.stats.reconnect_count += 1;
-
-                    // Resubscribe to all previous subscriptions
-                    let subscriptions = self.subscriptions.clone();
-                    for subscription in subscriptions {
-                        self.send_message(serde_json::to_value(subscription)?)
-                            .await?;
-                    }
-
-                    return Ok(());
-                },
-                Err(e) => {
-                    error!("Reconnection attempt {} failed: {}", retries + 1, e);
-                    retries += 1;
-
-                    if retries < self.reconnect_config.max_retries {
-                        tokio::time::sleep(delay).await;
-                        delay = std::cmp::min(
-                            delay.mul_f64(self.reconnect_config.backoff_multiplier),
-                            self.reconnect_config.max_delay,
-                        );
-                    }
-                },
-            }
+        // Resubscribe to all previous subscriptions
+        let subscriptions = self.subscriptions.clone();
+        for subscription in subscriptions {
+            self.send_message(serde_json::to_value(subscription)?).await?;
         }
 
-        Err(PolyfillError::stream(
-            format!(
-                "Failed to reconnect after {} attempts",
-                self.reconnect_config.max_retries
-            ),
-            crate::errors::StreamErrorKind::ConnectionFailed,
-        ))
+        Ok(())
     }
 }
 
@@ -454,24 +405,24 @@ impl Stream for WebSocketStream {
             return Poll::Ready(Some(Ok(message)));
         }
 
-        // Then check WebSocket connection
-        if let Some(connection) = &mut self.connection {
+        // Then check WebSocket connection via transport
+        if let Some(connection) = self.transport.connection_mut() {
             match connection.poll_next_unpin(cx) {
                 Poll::Ready(Some(Ok(_message))) => {
                     // Simplified message handling
                     Poll::Ready(Some(Ok(StreamMessage::Heartbeat {
                         timestamp: Utc::now(),
                     })))
-                },
+                }
                 Poll::Ready(Some(Err(e))) => {
                     error!("WebSocket error: {}", e);
-                    self.stats.errors += 1;
+                    self.transport.stats_mut().errors += 1;
                     Poll::Ready(Some(Err(e.into())))
-                },
+                }
                 Poll::Ready(None) => {
                     info!("WebSocket stream ended");
                     Poll::Ready(None)
-                },
+                }
                 Poll::Pending => Poll::Pending,
             }
         } else {
@@ -492,12 +443,425 @@ impl MarketStream for WebSocketStream {
     }
 
     fn is_connected(&self) -> bool {
-        self.connection.is_some()
+        self.transport.is_connected()
     }
 
     fn get_stats(&self) -> StreamStats {
-        self.stats.clone()
+        self.transport.stats().clone()
     }
+}
+
+// ============================================================================
+// LIVE DATA STREAM (wss://ws-live-data.polymarket.com)
+// ============================================================================
+
+use crate::types::{LiveDataMessage, LiveDataRequest, LiveDataSubscription, LiveTopic, Symbol};
+
+/// Live data WebSocket stream for crypto prices and other feeds
+pub struct LiveDataStream {
+    /// WebSocket transport
+    transport: WsTransport,
+    /// Current subscriptions
+    subscriptions: Vec<LiveDataSubscription>,
+    /// Message sender for internal communication
+    tx: mpsc::UnboundedSender<LiveDataMessage>,
+    /// Message receiver
+    rx: mpsc::UnboundedReceiver<LiveDataMessage>,
+    /// Staleness threshold - if no message received within this duration, reconnect
+    staleness_threshold: Option<std::time::Duration>,
+    /// Last message time (for staleness check)
+    last_message_instant: Option<std::time::Instant>,
+    /// Connection state for auto-reconnect
+    connection_state: ConnectionState,
+}
+
+impl LiveDataStream {
+    /// Default URL for live data WebSocket
+    pub const DEFAULT_URL: &'static str = "wss://ws-live-data.polymarket.com";
+
+    /// Create a new live data stream with default URL
+    pub fn new() -> Self {
+        Self::with_url(Self::DEFAULT_URL)
+    }
+
+    /// Create a new live data stream with custom URL
+    pub fn with_url(url: &str) -> Self {
+        let (tx, rx) = mpsc::unbounded_channel();
+
+        Self {
+            transport: WsTransport::new(url),
+            subscriptions: Vec::new(),
+            tx,
+            rx,
+            staleness_threshold: None,
+            last_message_instant: None,
+            connection_state: ConnectionState::Connected,
+        }
+    }
+
+    /// Set staleness threshold - stream will auto-reconnect if no message received within this duration
+    pub fn with_staleness_threshold(mut self, threshold: std::time::Duration) -> Self {
+        self.staleness_threshold = Some(threshold);
+        self
+    }
+
+    /// Connect to the WebSocket
+    pub async fn connect(&mut self) -> Result<()> {
+        self.transport.connect().await?;
+        self.last_message_instant = Some(std::time::Instant::now());
+        Ok(())
+    }
+
+    /// Send a message to the WebSocket
+    async fn send_message(&mut self, message: Value) -> Result<()> {
+        self.transport.send(&message).await
+    }
+
+    /// Subscribe to a live data topic
+    pub async fn subscribe(&mut self, subscription: LiveDataSubscription) -> Result<()> {
+        // Ensure connection
+        if !self.transport.is_connected() {
+            self.connect().await?;
+        }
+
+        // Send subscription message
+        let request = LiveDataRequest {
+            action: "subscribe".to_string(),
+            subscriptions: vec![subscription.clone()],
+        };
+
+        let message = serde_json::to_value(&request).map_err(|e| {
+            PolyfillError::parse(format!("Failed to serialize subscription: {}", e), None)
+        })?;
+
+        self.send_message(message).await?;
+        self.subscriptions.push(subscription.clone());
+
+        info!("Subscribed to live data topic: {}", subscription.topic);
+        Ok(())
+    }
+
+    /// Subscribe to a price feed (simplified API)
+    pub async fn subscribe_price(&mut self, topic: LiveTopic, symbol: Symbol) -> Result<()> {
+        self.subscribe(LiveDataSubscription::price(topic, symbol)).await
+    }
+
+    /// Unsubscribe from topics
+    pub async fn unsubscribe(&mut self, topics: &[String]) -> Result<()> {
+        let subs_to_remove: Vec<_> = self
+            .subscriptions
+            .iter()
+            .filter(|s| topics.contains(&s.topic))
+            .cloned()
+            .collect();
+
+        if !subs_to_remove.is_empty() {
+            let request = LiveDataRequest {
+                action: "unsubscribe".to_string(),
+                subscriptions: subs_to_remove,
+            };
+
+            let message = serde_json::to_value(&request).map_err(|e| {
+                PolyfillError::parse(format!("Failed to serialize unsubscription: {}", e), None)
+            })?;
+
+            self.send_message(message).await?;
+        }
+
+        self.subscriptions.retain(|s| !topics.contains(&s.topic));
+        info!("Unsubscribed from {} topics", topics.len());
+        Ok(())
+    }
+
+    /// Send a ping to keep the connection alive
+    pub async fn ping(&mut self) -> Result<()> {
+        self.transport.ping().await
+    }
+
+    /// Parse a live data message
+    fn parse_message(&self, text: &str) -> Result<LiveDataMessage> {
+        debug!("Raw WebSocket message: {}", text);
+        serde_json::from_str(text).map_err(|e| {
+            PolyfillError::parse(
+                format!("Failed to parse live data message: {} (raw: {})", e, text),
+                Some(Box::new(e)),
+            )
+        })
+    }
+
+    /// Check if the stream is connected
+    pub fn is_connected(&self) -> bool {
+        self.transport.is_connected()
+    }
+
+    /// Get connection statistics
+    pub fn get_stats(&self) -> StreamStats {
+        self.transport.stats().clone()
+    }
+
+    /// Check if the stream is stale (no messages within threshold)
+    pub fn is_stale(&self) -> bool {
+        match (self.staleness_threshold, self.last_message_instant) {
+            (Some(threshold), Some(last)) => last.elapsed() > threshold,
+            _ => false,
+        }
+    }
+
+    /// Reconnect with exponential backoff, resubscribing to previous topics
+    async fn reconnect(&mut self) -> Result<()> {
+        self.transport.reconnect().await?;
+        self.last_message_instant = Some(std::time::Instant::now());
+
+        // Resubscribe to previous topics
+        let subscriptions = self.subscriptions.clone();
+        for subscription in subscriptions {
+            if let Err(e) = self.subscribe(subscription).await {
+                warn!("Failed to resubscribe: {}", e);
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Get the next message (convenience method for non-Stream usage)
+    pub async fn next_message(&mut self) -> Option<Result<LiveDataMessage>> {
+        // Check for staleness and reconnect if needed
+        if self.is_stale() {
+            warn!("Stream stale, triggering reconnect");
+            if let Err(e) = self.reconnect().await {
+                return Some(Err(e));
+            }
+        }
+
+        // Use transport's recv which handles ping/pong automatically
+        match self.transport.recv().await {
+            Some(Ok(RawMessage::Text(text))) => {
+                self.last_message_instant = Some(std::time::Instant::now());
+                Some(self.parse_message(&text))
+            }
+            Some(Ok(RawMessage::Binary(_))) => {
+                // Ignore binary messages, recurse
+                Box::pin(self.next_message()).await
+            }
+            Some(Err(e)) => Some(Err(e)),
+            None => None,
+        }
+    }
+}
+
+impl Default for LiveDataStream {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl LiveDataStream {
+    /// Start a reconnection attempt
+    ///
+    /// Creates a future that will reconnect and resubscribe to all topics.
+    fn start_reconnect(&mut self) {
+        let url = self.transport.url().to_string();
+        let config = self.transport.reconnect_config().clone();
+        let subscriptions = self.subscriptions.clone();
+
+        info!("Starting reconnection to {}", url);
+
+        let future = Box::pin(async move {
+            let mut transport = WsTransport::new(&url).with_reconnect_config(config);
+            transport.reconnect().await?;
+
+            // Resubscribe to all previous topics
+            for subscription in &subscriptions {
+                let request = LiveDataRequest {
+                    action: "subscribe".to_string(),
+                    subscriptions: vec![subscription.clone()],
+                };
+                let message = serde_json::to_value(&request).map_err(|e| {
+                    PolyfillError::parse(format!("Failed to serialize subscription: {}", e), None)
+                })?;
+                transport.send(&message).await?;
+                info!("Resubscribed to topic: {}", subscription.topic);
+            }
+
+            Ok(ReconnectResult { transport })
+        });
+
+        self.connection_state = ConnectionState::Reconnecting(future);
+    }
+}
+
+impl Stream for LiveDataStream {
+    type Item = Result<LiveDataMessage>;
+
+    fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        loop {
+            // Handle connection state machine
+            match &mut self.connection_state {
+                ConnectionState::Failed => {
+                    return Poll::Ready(None);
+                }
+
+                ConnectionState::Reconnecting(future) => {
+                    match future.as_mut().poll(cx) {
+                        Poll::Ready(Ok(result)) => {
+                            // Reconnect succeeded - swap in new transport
+                            info!("Reconnection successful");
+                            self.transport = result.transport;
+                            self.last_message_instant = Some(std::time::Instant::now());
+                            self.connection_state = ConnectionState::Connected;
+                            continue;
+                        }
+                        Poll::Ready(Err(e)) => {
+                            error!("Reconnection failed permanently: {}", e);
+                            self.connection_state = ConnectionState::Failed;
+                            return Poll::Ready(Some(Err(e)));
+                        }
+                        Poll::Pending => return Poll::Pending,
+                    }
+                }
+
+                ConnectionState::Connected => {
+                    // First check internal channel
+                    if let Poll::Ready(Some(message)) = self.rx.poll_recv(cx) {
+                        return Poll::Ready(Some(Ok(message)));
+                    }
+
+                    // Check for staleness
+                    let heartbeat_timeout = self.staleness_threshold
+                        .unwrap_or(self.transport.reconnect_config().heartbeat_timeout);
+                    if self.transport.is_stale(heartbeat_timeout) {
+                        warn!("Connection stale (no activity for {:?}), triggering reconnect", heartbeat_timeout);
+                        self.transport.disconnect();
+                        self.start_reconnect();
+                        continue;
+                    }
+
+                    // Check WebSocket connection via transport
+                    if let Some(connection) = self.transport.connection_mut() {
+                        match connection.poll_next_unpin(cx) {
+                            Poll::Ready(Some(Ok(tokio_tungstenite::tungstenite::Message::Text(text)))) => {
+                                // Skip empty messages
+                                if text.is_empty() {
+                                    cx.waker().wake_by_ref();
+                                    return Poll::Pending;
+                                }
+                                self.transport.stats_mut().messages_received += 1;
+                                self.transport.stats_mut().last_message_time = Some(Utc::now());
+                                self.transport.reset_activity();
+                                self.last_message_instant = Some(std::time::Instant::now());
+                                return Poll::Ready(Some(self.parse_message(&text)));
+                            }
+                            Poll::Ready(Some(Ok(tokio_tungstenite::tungstenite::Message::Ping(data)))) => {
+                                // Handle ping - send pong
+                                self.transport.reset_activity();
+                                if let Some(conn) = self.transport.connection_mut() {
+                                    let pong = tokio_tungstenite::tungstenite::Message::Pong(data);
+                                    let _ = futures::executor::block_on(futures::SinkExt::send(conn, pong));
+                                }
+                                cx.waker().wake_by_ref();
+                                return Poll::Pending;
+                            }
+                            Poll::Ready(Some(Ok(tokio_tungstenite::tungstenite::Message::Pong(_)))) => {
+                                self.transport.reset_activity();
+                                cx.waker().wake_by_ref();
+                                return Poll::Pending;
+                            }
+                            Poll::Ready(Some(Ok(tokio_tungstenite::tungstenite::Message::Close(_)))) => {
+                                info!("LiveData WebSocket connection closed by server, triggering reconnect");
+                                self.transport.disconnect();
+                                self.start_reconnect();
+                                continue;
+                            }
+                            Poll::Ready(Some(Ok(_))) => {
+                                // Ignore other messages, wake to poll again
+                                cx.waker().wake_by_ref();
+                                return Poll::Pending;
+                            }
+                            Poll::Ready(Some(Err(e))) => {
+                                warn!("WebSocket error: {}, triggering reconnect", e);
+                                self.transport.stats_mut().errors += 1;
+                                self.transport.disconnect();
+                                self.start_reconnect();
+                                continue;
+                            }
+                            Poll::Ready(None) => {
+                                info!("WebSocket stream ended, triggering reconnect");
+                                self.transport.disconnect();
+                                self.start_reconnect();
+                                continue;
+                            }
+                            Poll::Pending => return Poll::Pending,
+                        }
+                    } else {
+                        // No connection - start reconnect
+                        info!("No WebSocket connection, triggering reconnect");
+                        self.start_reconnect();
+                        continue;
+                    }
+                }
+            }
+        }
+    }
+}
+
+// ============================================================================
+// PUBLIC ORDERBOOK TYPES (wss://ws-subscriptions-clob.polymarket.com/ws/market)
+// ============================================================================
+
+/// Book update message from public orderbook WebSocket
+///
+/// The server can send messages in two formats:
+/// - Snapshot: `{"asset_id": "...", "bids": [...], "asks": [...]}`
+/// - Delta: `{"market": "...", "price_changes": [...]}`
+#[derive(Debug, Clone, serde::Deserialize)]
+pub struct BookMessage {
+    /// Asset ID (for snapshot messages)
+    pub asset_id: Option<String>,
+    /// Market ID (for delta messages) - used when asset_id is not present
+    pub market: Option<String>,
+    #[allow(dead_code)]
+    pub event_type: Option<String>,
+    #[allow(dead_code)]
+    pub hash: Option<String>,
+    #[allow(dead_code)]
+    pub timestamp: Option<String>,
+    /// Bids (snapshot)
+    pub bids: Option<Vec<BookLevel>>,
+    /// Asks (snapshot)
+    pub asks: Option<Vec<BookLevel>>,
+    /// Changes (snapshot delta format)
+    pub changes: Option<Vec<BookChange>>,
+    /// Price changes (delta message format)
+    pub price_changes: Option<Vec<BookChange>>,
+}
+
+impl BookMessage {
+    /// Get the asset/market identifier
+    pub fn id(&self) -> Option<&str> {
+        self.asset_id.as_deref().or(self.market.as_deref())
+    }
+
+    /// Get changes (handles both `changes` and `price_changes` fields)
+    pub fn get_changes(&self) -> Option<&Vec<BookChange>> {
+        self.changes.as_ref().or(self.price_changes.as_ref())
+    }
+}
+
+/// Price level in orderbook
+#[derive(Debug, Clone, serde::Deserialize)]
+pub struct BookLevel {
+    pub price: String,
+    pub size: String,
+}
+
+/// Orderbook change (delta update)
+#[derive(Debug, Clone, serde::Deserialize)]
+pub struct BookChange {
+    /// Asset ID (for price_changes format)
+    pub asset_id: Option<String>,
+    pub side: String,
+    pub price: String,
+    pub size: String,
 }
 
 /// Mock stream for testing
