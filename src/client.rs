@@ -258,6 +258,32 @@ impl ClobClient {
         self.api_creds = Some(api_creds);
     }
 
+    /// Set the funder (proxy wallet) address for order signing
+    ///
+    /// On Polymarket, users trade through proxy wallets. The EOA signs orders
+    /// but the proxy wallet is the actual owner of the funds.
+    ///
+    /// # Arguments
+    /// * `funder` - The proxy wallet address (hex string with 0x prefix)
+    /// * `sig_type` - Signature type: 1 for PolyProxy, 2 for PolyGnosisSafe
+    pub fn set_funder(&mut self, funder: &str, sig_type: u8) {
+        if let Some(signer) = &self.signer {
+            let funder_address: alloy_primitives::Address = funder
+                .parse()
+                .expect("Invalid funder address");
+            let sig_type = match sig_type {
+                1 => Some(crate::orders::SigType::PolyProxy),
+                2 => Some(crate::orders::SigType::PolyGnosisSafe),
+                _ => Some(crate::orders::SigType::Eoa),
+            };
+            self.order_builder = Some(crate::orders::OrderBuilder::new(
+                signer.clone(),
+                sig_type,
+                Some(funder_address),
+            ));
+        }
+    }
+
     /// Start background keep-alive to maintain warm connection
     /// Sends periodic lightweight requests to prevent connection drops
     pub async fn start_keepalive(&self, interval: std::time::Duration) {
@@ -289,6 +315,41 @@ impl ClobClient {
         self.signer
             .as_ref()
             .map(|s| hex::encode_prefixed(s.address().as_slice()))
+    }
+
+    /// Derive the Polymarket proxy wallet address from the signer's EOA
+    ///
+    /// On Polymarket, users trade through proxy wallets created via CREATE2.
+    /// This computes the deterministic proxy address for the current signer.
+    pub fn derive_proxy_address(&self) -> Option<String> {
+        use alloy_primitives::{keccak256, Address, B256};
+
+        // Polymarket Proxy Factory on Polygon
+        const PROXY_FACTORY: &str = "0xaB45c5A4B0c941a2F231C04C3f49182e1A254052";
+        const PROXY_INIT_CODE_HASH: &str =
+            "0xd21df8dc65880a8606f09fe0ce3df9b8869287ab0b058be05aa9e8af6330a00b";
+
+        let signer = self.signer.as_ref()?;
+        let eoa = signer.address();
+
+        // salt = keccak256(abi.encodePacked(eoa))
+        // For a single address, encodePacked is just the 20-byte address
+        let salt = keccak256(eoa.as_slice());
+
+        // CREATE2 address = keccak256(0xff ++ factory ++ salt ++ init_code_hash)[12:]
+        let factory: Address = PROXY_FACTORY.parse().ok()?;
+        let init_code_hash: B256 = PROXY_INIT_CODE_HASH.parse().ok()?;
+
+        let mut data = [0u8; 85];
+        data[0] = 0xff;
+        data[1..21].copy_from_slice(factory.as_slice());
+        data[21..53].copy_from_slice(salt.as_slice());
+        data[53..85].copy_from_slice(init_code_hash.as_slice());
+
+        let hash = keccak256(&data);
+        let proxy_address = Address::from_slice(&hash[12..]);
+
+        Some(proxy_address.to_checksum(None))
     }
 
     /// Get the collateral token address for the current chain
@@ -841,13 +902,18 @@ impl ClobClient {
         let body = PostOrder::new(order, api_creds.api_key.clone(), order_type);
 
         let headers = create_l2_headers(signer, api_creds, "POST", "/order", Some(&body))?;
-        let req = self.create_request_with_headers(Method::POST, "/order", headers.into_iter());
+        let req = self.create_request_with_headers(Method::POST, "/order", headers.into_iter())
+            .header("Accept", "application/json")
+            .header("Origin", "https://polymarket.com")
+            .header("Referer", "https://polymarket.com/");
 
         let response = req.json(&body).send().await?;
         if !response.status().is_success() {
+            let status = response.status().as_u16();
+            let error_body = response.text().await.unwrap_or_default();
             return Err(PolyfillError::api(
-                response.status().as_u16(),
-                "Failed to post order",
+                status,
+                &format!("Failed to post order: {}", error_body),
             ));
         }
 
