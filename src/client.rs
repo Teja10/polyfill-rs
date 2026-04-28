@@ -2248,8 +2248,14 @@ mod tests {
         let market = result.unwrap();
         assert_eq!(market.condition_id, "0xcondition");
         assert_eq!(market.tokens.len(), 2);
+        assert_eq!(market.tokens[0].token_id, "0xyes");
+        assert_eq!(market.tokens[0].outcome, "Yes");
+        assert_eq!(market.tokens[1].token_id, "0xno");
+        assert_eq!(market.tokens[1].outcome, "No");
+        assert_eq!(market.minimum_order_size, Decimal::from_str("5.0").unwrap());
         assert_eq!(market.minimum_tick_size, Decimal::from_str("0.01").unwrap());
         assert_eq!(market.fee_details.fee_rate, 25);
+        assert_eq!(market.fee_details.fee_exponent, 2);
         assert!(!market.fee_details.taker_only);
         assert!(!market.is_taker_order_delay_enabled);
         assert!(market.is_blockaid_check_enabled);
@@ -2257,15 +2263,32 @@ mod tests {
         assert!(market.rfq_enabled);
     }
 
-    #[test]
-    fn test_clob_market_info_fee_free_fixture_parses() {
-        let market: ClobMarketDetails = serde_json::from_str(include_str!(
-            "../tests/fixtures/clob_market_info_fee_free.json"
-        ))
-        .unwrap();
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_get_clob_market_info_fee_free_success() {
+        let mut server = Server::new_async().await;
+        let mock = server
+            .mock("GET", "/clob-markets/0xcondition-free")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(include_str!(
+                "../tests/fixtures/clob_market_info_fee_free.json"
+            ))
+            .create_async()
+            .await;
 
+        let client = create_test_client(&server.url());
+        let result = client.get_clob_market_info("0xcondition-free").await;
+
+        mock.assert_async().await;
+        assert!(result.is_ok());
+        let market = result.unwrap();
         assert_eq!(market.condition_id, "0xcondition-free");
-        assert_eq!(market.game_start_time, None);
+        assert_eq!(market.tokens.len(), 2);
+        assert_eq!(market.tokens[0].token_id, "0xfreeyes");
+        assert_eq!(market.tokens[0].outcome, "Yes");
+        assert_eq!(market.tokens[1].token_id, "0xfreeno");
+        assert_eq!(market.tokens[1].outcome, "No");
+        assert_eq!(market.minimum_order_size, Decimal::from_str("5.0").unwrap());
         assert_eq!(
             market.minimum_tick_size,
             Decimal::from_str("0.001").unwrap()
@@ -2273,6 +2296,7 @@ mod tests {
         assert_eq!(market.fee_details.fee_rate, 0);
         assert_eq!(market.fee_details.fee_exponent, 0);
         assert!(!market.fee_details.taker_only);
+        assert_eq!(market.game_start_time, None);
         assert!(!market.rfq_enabled);
     }
 
