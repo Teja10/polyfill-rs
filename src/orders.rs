@@ -408,6 +408,28 @@ mod tests {
 
     #[test]
     fn test_get_contract_config() {
+        assert_eq!(EXCHANGE_V2, "0xE111180000d2663C0091e4f400237545B87B996B");
+        assert_eq!(
+            NEG_RISK_EXCHANGE_V2,
+            "0xe2222d279d744050d28e00520010520000310F59"
+        );
+        assert_eq!(
+            NEG_RISK_ADAPTER,
+            "0xd91E80cF2E7be2e162c6513ceD06f1dD0dA35296"
+        );
+        assert_eq!(
+            COLLATERAL_PUSD,
+            "0xC011a7E12a19f7B1f670d46F03B03f3342E82DFB"
+        );
+        assert_eq!(
+            CONDITIONAL_TOKENS,
+            "0x4D97DCd97eC945f40cF65F87097ACe5EA0476045"
+        );
+        assert_eq!(
+            COLLATERAL_ONRAMP,
+            "0x93070a847efEf7F70739046A929D47a521F5B8ee"
+        );
+
         let config = get_contract_config(137, false).unwrap();
         assert_eq!(config.exchange, EXCHANGE_V2);
         assert_eq!(config.collateral, COLLATERAL_PUSD);
@@ -420,15 +442,6 @@ mod tests {
 
         let config_unsupported = get_contract_config(999, false);
         assert!(config_unsupported.is_none());
-
-        assert_eq!(
-            NEG_RISK_ADAPTER,
-            "0xd91E80cF2E7be2e162c6513ceD06f1dD0dA35296"
-        );
-        assert_eq!(
-            COLLATERAL_ONRAMP,
-            "0x93070a847efEf7F70739046A929D47a521F5B8ee"
-        );
     }
 
     #[test]
@@ -467,6 +480,14 @@ mod tests {
         assert!(timestamp <= after);
         assert!(timestamp >= 1_000_000_000_000);
         assert_eq!(order.expiration, "123");
+        assert_eq!(
+            order.builder,
+            "0x0000000000000000000000000000000000000000000000000000000000000000"
+        );
+        assert_eq!(
+            order.metadata,
+            "0x0000000000000000000000000000000000000000000000000000000000000000"
+        );
     }
 
     #[test]
@@ -490,8 +511,14 @@ mod tests {
             )
             .unwrap();
 
-        assert_eq!(order.builder, builder.to_string());
-        assert_eq!(order.metadata, B256::ZERO.to_string());
+        assert_eq!(
+            order.builder,
+            "0x0707070707070707070707070707070707070707070707070707070707070707"
+        );
+        assert_eq!(
+            order.metadata,
+            "0x0000000000000000000000000000000000000000000000000000000000000000"
+        );
     }
 
     #[test]

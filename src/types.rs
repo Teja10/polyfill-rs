@@ -655,6 +655,7 @@ mod signed_order_tests {
         );
 
         assert!(value.get("taker").is_none());
+        assert!(value.get("expiration").is_some());
         assert!(value.get("nonce").is_none());
         assert!(value.get("feeRateBps").is_none());
     }
@@ -692,6 +693,7 @@ mod signed_order_tests {
         );
 
         assert!(value["order"].get("taker").is_none());
+        assert!(value["order"].get("expiration").is_some());
         assert!(value["order"].get("nonce").is_none());
         assert!(value["order"].get("feeRateBps").is_none());
         assert!(value.get("postOnly").is_none());

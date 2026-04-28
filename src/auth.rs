@@ -377,10 +377,15 @@ mod tests {
 
     #[test]
     fn test_order_eip712_type_is_v2() {
+        let order_type = Order::eip712_encode_type();
         assert_eq!(
-            Order::eip712_encode_type(),
+            order_type,
             "Order(uint256 salt,address maker,address signer,uint256 tokenId,uint256 makerAmount,uint256 takerAmount,uint8 side,uint8 signatureType,uint256 timestamp,bytes32 metadata,bytes32 builder)"
         );
+        assert!(!order_type.contains("taker,"));
+        assert!(!order_type.contains("expiration"));
+        assert!(!order_type.contains("nonce"));
+        assert!(!order_type.contains("feeRateBps"));
     }
 
     #[test]
