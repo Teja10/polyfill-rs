@@ -621,9 +621,11 @@ impl ClobClient {
             .await?;
 
         if !response.status().is_success() {
+            let status = response.status().as_u16();
+            let error_body = response.text().await?;
             return Err(PolyfillError::api(
-                response.status().as_u16(),
-                "Failed to get CLOB market info",
+                status,
+                format!("Failed to get CLOB market info: {}", error_body),
             ));
         }
 
@@ -968,11 +970,8 @@ impl ClobClient {
 
         // Owner field must reference the credential principal identifier
         // to maintain consistency with the authentication context layer
-        let body = if post_only {
-            PostOrder::with_post_only(order, api_creds.api_key.clone(), order_type, true)
-        } else {
-            PostOrder::new(order, api_creds.api_key.clone(), order_type)
-        };
+        let body =
+            PostOrder::with_post_only(order, api_creds.api_key.clone(), order_type, post_only);
 
         let headers = create_l2_headers(signer, api_creds, "POST", "/order", Some(&body))?;
         let req = self
@@ -984,7 +983,7 @@ impl ClobClient {
         let response = req.json(&body).send().await?;
         if !response.status().is_success() {
             let status = response.status().as_u16();
-            let error_body = response.text().await.unwrap_or_default();
+            let error_body = response.text().await?;
             return Err(PolyfillError::api(
                 status,
                 format!("Failed to post order: {}", error_body),
@@ -1068,9 +1067,11 @@ impl ClobClient {
 
         let response = req.json(&body).send().await?;
         if !response.status().is_success() {
+            let status = response.status().as_u16();
+            let error_body = response.text().await?;
             return Err(PolyfillError::api(
-                response.status().as_u16(),
-                "Failed to cancel order",
+                status,
+                format!("Failed to cancel order: {}", error_body),
             ));
         }
 
@@ -1524,6 +1525,15 @@ impl ClobClient {
             .send()
             .await
             .map_err(|e| PolyfillError::network(format!("Request failed: {}", e), e))?;
+
+        if !response.status().is_success() {
+            let status = response.status().as_u16();
+            let error_body = response.text().await?;
+            return Err(PolyfillError::api(
+                status,
+                format!("Failed to get order: {}", error_body),
+            ));
+        }
 
         response
             .json::<crate::types::OpenOrder>()
@@ -2258,6 +2268,7 @@ mod tests {
         assert_eq!(market.fee_details.fee_exponent, 2);
         assert!(!market.fee_details.taker_only);
         assert!(!market.is_taker_order_delay_enabled);
+        assert!(!market.neg_risk);
         assert!(market.is_blockaid_check_enabled);
         assert_eq!(market.minimum_order_age_seconds, 0);
         assert!(market.rfq_enabled);
@@ -2297,6 +2308,7 @@ mod tests {
         assert_eq!(market.fee_details.fee_exponent, 0);
         assert!(!market.fee_details.taker_only);
         assert_eq!(market.game_start_time, None);
+        assert!(!market.neg_risk);
         assert!(!market.rfq_enabled);
     }
 
