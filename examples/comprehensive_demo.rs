@@ -12,8 +12,6 @@
 use polyfill_rs::{
     // Order book management
     book::{OrderBook, OrderBookManager},
-    Exchange,
-
     // Error handling
     errors::{PolyfillError, Result},
 
@@ -33,6 +31,8 @@ use polyfill_rs::{
     ClientConfig,
     // Core client types
     ClobClient,
+    Exchange,
+
     OrderArgs,
     OrderType,
 
@@ -104,7 +104,6 @@ impl PolyfillDemo {
             private_key: None,              // Would be set in production
             api_credentials: None,          // Would be set in production
             max_slippage: Some(dec!(0.01)), // 1% max slippage
-            fee_rate: Some(dec!(0.02)),     // 2% fee rate
             timeout: Some(Duration::from_secs(30)),
             max_connections: Some(100),
         };
@@ -118,7 +117,7 @@ impl PolyfillDemo {
         let fill_engine = FillEngine::new(
             dec!(1.0), // Min fill size
             dec!(2.0), // Max slippage 2%
-            5,         // 5 bps fee rate
+            5,         // 5 bps simulation fee
         );
 
         // Create fill processor
@@ -638,7 +637,11 @@ impl PolyfillDemo {
             match &message {
                 StreamMessage::BookUpdate { data } => {
                     info!("  Processing book update for token: {}", data.token_id);
-                    if let Err(e) = self.book_manager.apply_delta(Exchange::Polymarket, data.clone()).await {
+                    if let Err(e) = self
+                        .book_manager
+                        .apply_delta(Exchange::Polymarket, data.clone())
+                        .await
+                    {
                         error!("  Failed to apply book update: {}", e);
                         self.stats.errors += 1;
                     }

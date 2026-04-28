@@ -3,11 +3,11 @@
 //! This module defines all the stable public types used throughout the client.
 //! These types are optimized for latency-sensitive trading environments.
 
-use alloy_primitives::{Address, U256};
+use alloy_primitives::Address;
 use chrono::{DateTime, Utc};
 use rust_decimal::prelude::ToPrimitive;
 use rust_decimal::Decimal;
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 
 // ============================================================================
 // FIXED-POINT OPTIMIZATION FOR HOT PATH PERFORMANCE
@@ -523,25 +523,6 @@ pub struct ApiCredentials {
 pub struct OrderOptions {
     pub tick_size: Option<Decimal>,
     pub neg_risk: Option<bool>,
-    pub fee_rate_bps: Option<u32>,
-}
-
-/// Extra arguments for order creation
-#[derive(Debug, Clone)]
-pub struct ExtraOrderArgs {
-    pub fee_rate_bps: u32,
-    pub nonce: U256,
-    pub taker: String,
-}
-
-impl Default for ExtraOrderArgs {
-    fn default() -> Self {
-        Self {
-            fee_rate_bps: 0,
-            nonce: U256::ZERO,
-            taker: "0x0000000000000000000000000000000000000000".to_string(),
-        }
-    }
 }
 
 /// Market order arguments
@@ -558,15 +539,15 @@ pub struct SignedOrderRequest {
     pub salt: u64,
     pub maker: String,
     pub signer: String,
-    pub taker: String,
     pub token_id: String,
     pub maker_amount: String,
     pub taker_amount: String,
     pub expiration: String,
-    pub nonce: String,
-    pub fee_rate_bps: String,
     pub side: String,
     pub signature_type: u8,
+    pub timestamp: String,
+    pub metadata: String,
+    pub builder: String,
     pub signature: String,
 }
 
@@ -621,6 +602,98 @@ impl PostOrderArgs {
             order_type,
             post_only,
         }
+    }
+}
+
+#[cfg(test)]
+mod signed_order_tests {
+    use super::*;
+    use serde_json::json;
+
+    fn signed_order_request() -> SignedOrderRequest {
+        SignedOrderRequest {
+            salt: 123,
+            maker: "0x0000000000000000000000000000000000000001".to_string(),
+            signer: "0x0000000000000000000000000000000000000002".to_string(),
+            token_id: "456".to_string(),
+            maker_amount: "1000000".to_string(),
+            taker_amount: "2000000".to_string(),
+            expiration: "0".to_string(),
+            side: "BUY".to_string(),
+            signature_type: 2,
+            timestamp: "1710000000000".to_string(),
+            metadata: "0x0000000000000000000000000000000000000000000000000000000000000000"
+                .to_string(),
+            builder: "0x0000000000000000000000000000000000000000000000000000000000000000"
+                .to_string(),
+            signature: "0xsig".to_string(),
+        }
+    }
+
+    #[test]
+    fn signed_order_request_serializes_v2_wire_body() {
+        let value = serde_json::to_value(signed_order_request()).unwrap();
+
+        assert_eq!(
+            value,
+            json!({
+                "salt": 123,
+                "maker": "0x0000000000000000000000000000000000000001",
+                "signer": "0x0000000000000000000000000000000000000002",
+                "tokenId": "456",
+                "makerAmount": "1000000",
+                "takerAmount": "2000000",
+                "expiration": "0",
+                "side": "BUY",
+                "signatureType": 2,
+                "timestamp": "1710000000000",
+                "metadata": "0x0000000000000000000000000000000000000000000000000000000000000000",
+                "builder": "0x0000000000000000000000000000000000000000000000000000000000000000",
+                "signature": "0xsig"
+            })
+        );
+
+        assert!(value.get("taker").is_none());
+        assert!(value.get("nonce").is_none());
+        assert!(value.get("feeRateBps").is_none());
+    }
+
+    #[test]
+    fn post_order_serializes_v2_order_body() {
+        let value = serde_json::to_value(PostOrder::new(
+            signed_order_request(),
+            "owner-key".to_string(),
+            OrderType::GTC,
+        ))
+        .unwrap();
+
+        assert_eq!(
+            value,
+            json!({
+                "order": {
+                    "salt": 123,
+                    "maker": "0x0000000000000000000000000000000000000001",
+                    "signer": "0x0000000000000000000000000000000000000002",
+                    "tokenId": "456",
+                    "makerAmount": "1000000",
+                    "takerAmount": "2000000",
+                    "expiration": "0",
+                    "side": "BUY",
+                    "signatureType": 2,
+                    "timestamp": "1710000000000",
+                    "metadata": "0x0000000000000000000000000000000000000000000000000000000000000000",
+                    "builder": "0x0000000000000000000000000000000000000000000000000000000000000000",
+                    "signature": "0xsig"
+                },
+                "owner": "owner-key",
+                "orderType": "GTC"
+            })
+        );
+
+        assert!(value["order"].get("taker").is_none());
+        assert!(value["order"].get("nonce").is_none());
+        assert!(value["order"].get("feeRateBps").is_none());
+        assert!(value.get("postOnly").is_none());
     }
 }
 
@@ -687,6 +760,83 @@ pub struct Token {
     pub winner: bool,
 }
 
+fn required_nullable_string<'de, D>(
+    deserializer: D,
+) -> std::result::Result<Option<String>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    Option::<String>::deserialize(deserializer)
+}
+
+/// V2 CLOB market information from `/clob-markets/{condition_id}`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ClobMarketDetails {
+    #[serde(rename = "c")]
+    pub condition_id: String,
+    #[serde(rename = "gst", deserialize_with = "required_nullable_string")]
+    pub game_start_time: Option<String>,
+    #[serde(rename = "r")]
+    pub rewards: ClobRewards,
+    #[serde(rename = "t")]
+    pub tokens: Vec<ClobToken>,
+    #[serde(rename = "mos", with = "rust_decimal::serde::float")]
+    pub minimum_order_size: Decimal,
+    #[serde(rename = "mts", with = "rust_decimal::serde::float")]
+    pub minimum_tick_size: Decimal,
+    #[serde(rename = "mbf", with = "rust_decimal::serde::float")]
+    pub maker_base_fee: Decimal,
+    #[serde(rename = "tbf", with = "rust_decimal::serde::float")]
+    pub taker_base_fee: Decimal,
+    #[serde(rename = "rfqe")]
+    pub rfq_enabled: bool,
+    #[serde(rename = "itode")]
+    pub is_taker_order_delay_enabled: bool,
+    #[serde(rename = "ibce")]
+    pub is_blockaid_check_enabled: bool,
+    #[serde(rename = "fd")]
+    pub fee_details: ClobFeeDetails,
+    #[serde(rename = "oas")]
+    pub minimum_order_age_seconds: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ClobToken {
+    #[serde(rename = "t")]
+    pub token_id: String,
+    #[serde(rename = "o")]
+    pub outcome: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ClobRewards {
+    #[serde(rename = "mi", with = "rust_decimal::serde::float")]
+    pub min_size: Decimal,
+    #[serde(rename = "ma", with = "rust_decimal::serde::float")]
+    pub max_spread: Decimal,
+    #[serde(rename = "e")]
+    pub event_start_date: Option<String>,
+    #[serde(rename = "moas", with = "rust_decimal::serde::float")]
+    pub max_order_amount_spread: Decimal,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ClobRewardRate {
+    #[serde(with = "rust_decimal::serde::float")]
+    pub reward_rate: Decimal,
+    pub asset_address: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ClobFeeDetails {
+    #[serde(rename = "r")]
+    pub fee_rate: u32,
+    #[serde(rename = "e")]
+    pub fee_exponent: u32,
+    #[serde(rename = "to")]
+    pub taker_only: bool,
+}
+
 /// Client configuration for PolyfillClient
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ClientConfig {
@@ -700,8 +850,6 @@ pub struct ClientConfig {
     pub api_credentials: Option<ApiCredentials>,
     /// Maximum slippage tolerance
     pub max_slippage: Option<Decimal>,
-    /// Fee rate in basis points
-    pub fee_rate: Option<Decimal>,
     /// Request timeout
     pub timeout: Option<std::time::Duration>,
     /// Maximum number of connections
@@ -718,7 +866,6 @@ impl Default for ClientConfig {
             timeout: Some(std::time::Duration::from_secs(30)),
             max_connections: Some(100),
             max_slippage: None,
-            fee_rate: None,
         }
     }
 }
@@ -820,6 +967,7 @@ impl LiveTopic {
 
 /// Crypto symbols for price feeds
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[allow(clippy::upper_case_acronyms)]
 pub enum Symbol {
     BTC,
     ETH,
@@ -1168,13 +1316,6 @@ pub struct TickSizeResponse {
 #[derive(Debug, Deserialize)]
 pub struct NegRiskResponse {
     pub neg_risk: bool,
-}
-
-/// Response from the fee-rate API endpoint
-#[derive(Debug, Clone, Deserialize)]
-pub struct FeeRateResponse {
-    /// Base fee (0 for fee-free markets, non-zero for fee-enabled markets)
-    pub base_fee: u32,
 }
 
 #[derive(Debug, Serialize, Deserialize)]

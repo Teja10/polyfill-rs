@@ -86,8 +86,6 @@ pub fn init() {
 // Re-export main types
 pub use crate::types::{
     ApiCredentials,
-    // Exchange enum for multi-venue orderbook management
-    Exchange,
     // Additional compatibility types
     ApiKeysResponse,
     AssetType,
@@ -101,7 +99,13 @@ pub use crate::types::{
     BookParams,
     ClientConfig,
     ClientResult,
-    FeeRateResponse,
+    ClobFeeDetails,
+    ClobMarketDetails,
+    ClobRewardRate,
+    ClobRewards,
+    ClobToken,
+    // Exchange enum for multi-venue orderbook management
+    Exchange,
     FillEvent,
     // Live data types
     LiveDataMessage,
@@ -164,10 +168,8 @@ pub use crate::stream::{
 };
 pub use crate::transport::{RawMessage, WsTransport};
 
-// Re-export fee calculation
-pub use crate::fees::{
-    calculate_fee_rate_bps, calculate_taker_fee, effective_fee_rate, FEE_RATE_BPS_MAKER,
-};
+// Re-export fee estimation
+pub use crate::fees::calculate_taker_fee;
 
 // Re-export utilities
 pub use crate::utils::{crypto, math, rate_limit, retry, time, url};
@@ -217,9 +219,7 @@ mod benches {
                     sequence: 1,
                 };
 
-                let _ = rt.block_on(
-                    book_manager.apply_delta(Exchange::Polymarket, delta),
-                );
+                let _ = rt.block_on(book_manager.apply_delta(Exchange::Polymarket, delta));
             });
         });
     }

@@ -6,8 +6,8 @@
 use crate::auth::sign_order_message;
 use crate::client::OrderArgs;
 use crate::errors::{PolyfillError, Result};
-use crate::types::{ExtraOrderArgs, MarketOrderArgs, OrderOptions, Side, SignedOrderRequest};
-use alloy_primitives::{Address, U256};
+use crate::types::{MarketOrderArgs, OrderOptions, Side, SignedOrderRequest};
+use alloy_primitives::{Address, B256, U256};
 use alloy_signer_local::PrivateKeySigner;
 use rand::Rng;
 use rust_decimal::Decimal;
@@ -91,12 +91,12 @@ static ROUNDING_CONFIG: LazyLock<HashMap<Decimal, RoundConfig>> = LazyLock::new(
 pub fn get_contract_config(chain_id: u64, neg_risk: bool) -> Option<ContractConfig> {
     match (chain_id, neg_risk) {
         (137, false) => Some(ContractConfig {
-            exchange: "0x4bFb41d5B3570DeFd03C39a9A4D8dE6Bd8B8982E".to_string(),
+            exchange: "0xE111180000d2663C0091e4f400237545B87B996B".to_string(),
             collateral: "0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174".to_string(),
             conditional_tokens: "0x4D97DCd97eC945f40cF65F87097ACe5EA0476045".to_string(),
         }),
         (137, true) => Some(ContractConfig {
-            exchange: "0xC5d563A36AE78145C45a50134d48A1215220f80a".to_string(),
+            exchange: "0xe2222d279d744050d28e00520010520000310F59".to_string(),
             collateral: "0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174".to_string(),
             conditional_tokens: "0x4D97DCd97eC945f40cF65F87097ACe5EA0476045".to_string(),
         }),
@@ -239,7 +239,6 @@ impl OrderBuilder {
         chain_id: u64,
         order_args: &MarketOrderArgs,
         price: Decimal,
-        extras: &ExtraOrderArgs,
         options: &OrderOptions,
     ) -> Result<SignedOrderRequest> {
         let tick_size = options
@@ -268,7 +267,6 @@ impl OrderBuilder {
             maker_amount,
             taker_amount,
             0,
-            extras,
         )
     }
 
@@ -278,7 +276,6 @@ impl OrderBuilder {
         chain_id: u64,
         order_args: &OrderArgs,
         expiration: u64,
-        extras: &ExtraOrderArgs,
         options: &OrderOptions,
     ) -> Result<SignedOrderRequest> {
         let tick_size = options
@@ -311,7 +308,6 @@ impl OrderBuilder {
             maker_amount,
             taker_amount,
             expiration,
-            extras,
         )
     }
 
@@ -326,12 +322,13 @@ impl OrderBuilder {
         maker_amount: u32,
         taker_amount: u32,
         expiration: u64,
-        extras: &ExtraOrderArgs,
     ) -> Result<SignedOrderRequest> {
         let seed = generate_seed();
-        let taker_address = Address::from_str(&extras.taker)
-            .map_err(|e| PolyfillError::validation(format!("Invalid taker address: {}", e)))?;
-
+        let timestamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("Time went backwards")
+            .as_millis();
+        let zero_hash = B256::ZERO;
         let u256_token_id = U256::from_str_radix(&token_id, 10)
             .map_err(|e| PolyfillError::validation(format!("Incorrect tokenId format: {}", e)))?;
 
@@ -339,15 +336,14 @@ impl OrderBuilder {
             salt: U256::from(seed),
             maker: self.funder,
             signer: self.signer.address(),
-            taker: taker_address,
             tokenId: u256_token_id,
             makerAmount: U256::from(maker_amount),
             takerAmount: U256::from(taker_amount),
-            expiration: U256::from(expiration),
-            nonce: extras.nonce,
-            feeRateBps: U256::from(extras.fee_rate_bps),
             side: side as u8,
             signatureType: self.sig_type as u8,
+            timestamp: U256::from(timestamp),
+            metadata: zero_hash,
+            builder: zero_hash,
         };
 
         let signature = sign_order_message(&self.signer, order, chain_id, exchange)?;
@@ -356,15 +352,15 @@ impl OrderBuilder {
             salt: seed,
             maker: self.funder.to_checksum(None),
             signer: self.signer.address().to_checksum(None),
-            taker: taker_address.to_checksum(None),
             token_id,
             maker_amount: maker_amount.to_string(),
             taker_amount: taker_amount.to_string(),
             expiration: expiration.to_string(),
-            nonce: extras.nonce.to_string(),
-            fee_rate_bps: extras.fee_rate_bps.to_string(),
             side: side.as_str().to_string(),
             signature_type: self.sig_type as u8,
+            timestamp: timestamp.to_string(),
+            metadata: zero_hash.to_string(),
+            builder: zero_hash.to_string(),
             signature,
         })
     }
@@ -407,14 +403,59 @@ mod tests {
         // Test Polygon mainnet
         let config = get_contract_config(137, false);
         assert!(config.is_some());
+        assert_eq!(
+            config.unwrap().exchange,
+            "0xE111180000d2663C0091e4f400237545B87B996B"
+        );
 
         // Test with neg risk
         let config_neg = get_contract_config(137, true);
         assert!(config_neg.is_some());
+        assert_eq!(
+            config_neg.unwrap().exchange,
+            "0xe2222d279d744050d28e00520010520000310F59"
+        );
 
         // Test unsupported chain
         let config_unsupported = get_contract_config(999, false);
         assert!(config_unsupported.is_none());
+    }
+
+    #[test]
+    fn test_signed_order_timestamp_is_millis_and_expiration_is_wire_only() {
+        let signer: PrivateKeySigner =
+            "0x1234567890123456789012345678901234567890123456789012345678901234"
+                .parse()
+                .unwrap();
+        let builder = OrderBuilder::new(signer, None, None);
+        let order_args = OrderArgs::new(
+            "123456",
+            Decimal::from_str("0.50").unwrap(),
+            Decimal::from_str("5").unwrap(),
+            Side::BUY,
+        );
+        let options = OrderOptions {
+            tick_size: Some(Decimal::from_str("0.01").unwrap()),
+            neg_risk: Some(false),
+        };
+        let before = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_millis();
+
+        let order = builder
+            .create_order(137, &order_args, 123, &options)
+            .unwrap();
+
+        let after = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_millis();
+        let timestamp = order.timestamp.parse::<u128>().unwrap();
+        assert!(timestamp >= before);
+        assert!(timestamp <= after);
+        assert!(timestamp >= 1_000_000_000_000);
+        assert_eq!(order.expiration, "123");
     }
 
     #[test]
