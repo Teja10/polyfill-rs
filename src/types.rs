@@ -559,8 +559,8 @@ pub struct PostOrder {
     pub order: SignedOrderRequest,
     pub owner: String,
     pub order_type: OrderType,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub post_only: Option<bool>,
+    pub defer_exec: bool,
+    pub post_only: bool,
 }
 
 impl PostOrder {
@@ -569,7 +569,8 @@ impl PostOrder {
             order,
             owner,
             order_type,
-            post_only: None,
+            defer_exec: false,
+            post_only: false,
         }
     }
 
@@ -583,7 +584,8 @@ impl PostOrder {
             order,
             owner,
             order_type,
-            post_only: Some(post_only),
+            defer_exec: false,
+            post_only,
         }
     }
 }
@@ -688,7 +690,9 @@ mod signed_order_tests {
                     "signature": "0xsig"
                 },
                 "owner": "owner-key",
-                "orderType": "GTC"
+                "orderType": "GTC",
+                "deferExec": false,
+                "postOnly": false
             })
         );
 
@@ -696,7 +700,42 @@ mod signed_order_tests {
         assert!(value["order"].get("expiration").is_some());
         assert!(value["order"].get("nonce").is_none());
         assert!(value["order"].get("feeRateBps").is_none());
-        assert!(value.get("postOnly").is_none());
+    }
+
+    #[test]
+    fn post_order_serializes_post_only_v2_order_body() {
+        let value = serde_json::to_value(PostOrder::with_post_only(
+            signed_order_request(),
+            "owner-key".to_string(),
+            OrderType::GTC,
+            true,
+        ))
+        .unwrap();
+
+        assert_eq!(
+            value,
+            json!({
+                "order": {
+                    "salt": 123,
+                    "maker": "0x0000000000000000000000000000000000000001",
+                    "signer": "0x0000000000000000000000000000000000000002",
+                    "tokenId": "456",
+                    "makerAmount": "1000000",
+                    "takerAmount": "2000000",
+                    "expiration": "0",
+                    "side": "BUY",
+                    "signatureType": 2,
+                    "timestamp": "1710000000000",
+                    "metadata": "0x0000000000000000000000000000000000000000000000000000000000000000",
+                    "builder": "0x0000000000000000000000000000000000000000000000000000000000000000",
+                    "signature": "0xsig"
+                },
+                "owner": "owner-key",
+                "orderType": "GTC",
+                "deferExec": false,
+                "postOnly": true
+            })
+        );
     }
 }
 
@@ -795,6 +834,8 @@ pub struct ClobMarketDetails {
     pub rfq_enabled: bool,
     #[serde(rename = "itode")]
     pub is_taker_order_delay_enabled: bool,
+    #[serde(rename = "nr", default)]
+    pub neg_risk: bool,
     #[serde(rename = "ibce")]
     pub is_blockaid_check_enabled: bool,
     #[serde(rename = "fd")]

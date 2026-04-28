@@ -78,6 +78,35 @@ cargo test --test integration_tests -- --nocapture
 ### API Credentials Required
 - **Order Management**: Order creation and management (read-only tests)
 
+## CLOB V2 Preprod Lifecycle Verification
+
+This gated command runs the authenticated V2 preprod order lifecycle against the explicit host supplied by the caller. It does not read `.env`, derive credentials, retry failed API calls, or fall back to another host.
+
+Required environment variables:
+- `POLYMARKET_CLOB_HOST`
+- `POLYMARKET_PRIVATE_KEY`
+- `POLYMARKET_API_KEY`
+- `POLYMARKET_API_SECRET`
+- `POLYMARKET_API_PASSPHRASE`
+- `POLYMARKET_CONDITION_ID`
+- `POLYMARKET_TOKEN_ID`
+
+Optional environment variables:
+- `POLYMARKET_BUILDER`
+
+```bash
+POLYMARKET_CLOB_HOST=https://clob-v2.polymarket.com POLYMARKET_PRIVATE_KEY=<private-key> POLYMARKET_API_KEY=<api-key> POLYMARKET_API_SECRET=<api-secret> POLYMARKET_API_PASSPHRASE=<passphrase> POLYMARKET_CONDITION_ID=<condition-id> POLYMARKET_TOKEN_ID=<token-id> cargo run --example clob_v2_preprod_lifecycle --release
+```
+
+Successful output includes these markers:
+- `market-info fetch:`
+- `V1-field absence check:`
+- `post response:`
+- `query response:`
+- `cancel response:`
+
+Blocked output exits nonzero and must list the exact missing env vars, funding/API blocker, or raw preprod API status/body returned by the CLOB.
+
 ## Test Results
 
 ### Success Indicators
@@ -235,4 +264,4 @@ async fn test_new_feature() -> Result<()> {
 - **Never commit credentials**: All test credentials are loaded from environment variables
 - **Use test accounts**: If testing with real credentials, use dedicated test accounts
 - **Read-only tests**: Order management tests only create orders, they don't execute them
-- **Rate limiting**: Tests include delays to respect API rate limits 
+- **Rate limiting**: Tests include delays to respect API rate limits
