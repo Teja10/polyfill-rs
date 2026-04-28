@@ -3,7 +3,7 @@
 //! This module defines all the stable public types used throughout the client.
 //! These types are optimized for latency-sensitive trading environments.
 
-use alloy_primitives::Address;
+use alloy_primitives::{Address, B256};
 use chrono::{DateTime, Utc};
 use rust_decimal::prelude::ToPrimitive;
 use rust_decimal::Decimal;
@@ -523,6 +523,7 @@ pub struct ApiCredentials {
 pub struct OrderOptions {
     pub tick_size: Option<Decimal>,
     pub neg_risk: Option<bool>,
+    pub builder: B256,
 }
 
 /// Market order arguments

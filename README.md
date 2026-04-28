@@ -146,6 +146,10 @@ Polymarket applies fees at match time. Signed orders do not include fee informat
 `client.get_clob_market_info(condition_id).await?.fee_details` when you need fee parameters for
 estimation or simulation.
 
+API-only users must wrap USDC.e into pUSD through Polymarket's Collateral Onramp before trading.
+This crate exposes the V2 contract addresses only; it does not include an onchain provider or wrap
+helper.
+
 **High-Frequency Market Making:**
 ```rust
 use polyfill_rs::{OrderBookImpl, WebSocketStream};
