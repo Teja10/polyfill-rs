@@ -800,9 +800,9 @@ impl ClobClient {
         token_id: &str,
         options: Option<&OrderOptions>,
     ) -> Result<OrderOptions> {
-        let (tick_size, neg_risk) = match options {
-            Some(o) => (o.tick_size, o.neg_risk),
-            None => (None, None),
+        let (tick_size, neg_risk, builder) = match options {
+            Some(o) => (o.tick_size, o.neg_risk, o.builder),
+            None => (None, None, alloy_primitives::B256::ZERO),
         };
 
         let tick_size = match tick_size {
@@ -834,6 +834,7 @@ impl ClobClient {
         Ok(OrderOptions {
             tick_size: Some(tick_size),
             neg_risk: Some(neg_risk),
+            builder,
         })
     }
 
@@ -2328,6 +2329,7 @@ mod tests {
         let options = OrderOptions {
             tick_size: None,
             neg_risk: None,
+            builder: alloy_primitives::B256::ZERO,
         };
         let result = client.create_order(&order_args, 0, Some(&options)).await;
 
