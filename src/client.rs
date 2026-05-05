@@ -2111,7 +2111,10 @@ mod tests {
             ],
             "asks": [
                 {"price": "0.76", "size": "50.0"}
-            ]
+            ],
+            "min_order_size": "5",
+            "tick_size": "0.01",
+            "neg_risk": false
         }"#;
 
         let mock = server
@@ -2132,6 +2135,9 @@ mod tests {
         assert_eq!(book.market, "0x123");
         assert_eq!(book.bids.len(), 1);
         assert_eq!(book.asks.len(), 1);
+        assert_eq!(book.min_order_size, Decimal::from_str("5").unwrap());
+        assert_eq!(book.tick_size, Decimal::from_str("0.01").unwrap());
+        assert!(!book.neg_risk);
     }
 
     #[tokio::test(flavor = "multi_thread")]
@@ -2620,7 +2626,10 @@ mod tests {
                 "hash": "test-hash",
                 "timestamp": "1234567890",
                 "bids": [{"price": "0.75", "size": "100.0"}],
-                "asks": [{"price": "0.76", "size": "50.0"}]
+                "asks": [{"price": "0.76", "size": "50.0"}],
+                "min_order_size": "5",
+                "tick_size": "0.01",
+                "neg_risk": false
             }
         ]"#;
 

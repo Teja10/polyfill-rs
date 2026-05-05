@@ -1377,6 +1377,11 @@ pub struct OrderBookSummary {
     pub timestamp: u64,
     pub bids: Vec<OrderSummary>,
     pub asks: Vec<OrderSummary>,
+    #[serde(deserialize_with = "crate::decode::deserializers::number_from_string")]
+    pub min_order_size: Decimal,
+    #[serde(deserialize_with = "crate::decode::deserializers::number_from_string")]
+    pub tick_size: Decimal,
+    pub neg_risk: bool,
 }
 
 #[derive(Debug, Deserialize)]
