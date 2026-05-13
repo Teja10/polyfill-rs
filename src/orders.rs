@@ -3,10 +3,10 @@
 //! This module handles the complex process of creating and signing orders
 //! for the Polymarket CLOB, including EIP-712 signature generation.
 
-use crate::auth::sign_order_message;
+use crate::auth::{hash_order_message, sign_order_message};
 use crate::client::OrderArgs;
 use crate::errors::{PolyfillError, Result};
-use crate::types::{MarketOrderArgs, OrderOptions, Side, SignedOrderRequest};
+use crate::types::{MarketOrderArgs, OrderOptions, Side, SignedOrderRequest, SignedOrderWithHash};
 use alloy_primitives::{Address, B256, U256};
 use alloy_signer_local::PrivateKeySigner;
 use rand::Rng;
@@ -245,7 +245,7 @@ impl OrderBuilder {
         order_args: &MarketOrderArgs,
         price: Decimal,
         options: &OrderOptions,
-    ) -> Result<SignedOrderRequest> {
+    ) -> Result<SignedOrderWithHash> {
         let tick_size = options
             .tick_size
             .ok_or_else(|| PolyfillError::validation("Cannot create order without tick size"))?;
@@ -283,7 +283,7 @@ impl OrderBuilder {
         order_args: &OrderArgs,
         expiration: u64,
         options: &OrderOptions,
-    ) -> Result<SignedOrderRequest> {
+    ) -> Result<SignedOrderWithHash> {
         let tick_size = options
             .tick_size
             .ok_or_else(|| PolyfillError::validation("Cannot create order without tick size"))?;
@@ -330,7 +330,7 @@ impl OrderBuilder {
         taker_amount: u32,
         expiration: u64,
         builder: B256,
-    ) -> Result<SignedOrderRequest> {
+    ) -> Result<SignedOrderWithHash> {
         let seed = generate_seed();
         let timestamp = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -354,22 +354,26 @@ impl OrderBuilder {
             builder,
         };
 
+        let expected_order_id = hash_order_message(order.clone(), chain_id, exchange)?;
         let signature = sign_order_message(&self.signer, order, chain_id, exchange)?;
 
-        Ok(SignedOrderRequest {
-            salt: seed,
-            maker: self.funder.to_checksum(None),
-            signer: self.signer.address().to_checksum(None),
-            token_id,
-            maker_amount: maker_amount.to_string(),
-            taker_amount: taker_amount.to_string(),
-            expiration: expiration.to_string(),
-            side: side.as_str().to_string(),
-            signature_type: self.sig_type as u8,
-            timestamp: timestamp.to_string(),
-            metadata: zero_hash.to_string(),
-            builder: builder.to_string(),
-            signature,
+        Ok(SignedOrderWithHash {
+            expected_order_id,
+            order: SignedOrderRequest {
+                salt: seed,
+                maker: self.funder.to_checksum(None),
+                signer: self.signer.address().to_checksum(None),
+                token_id,
+                maker_amount: maker_amount.to_string(),
+                taker_amount: taker_amount.to_string(),
+                expiration: expiration.to_string(),
+                side: side.as_str().to_string(),
+                signature_type: self.sig_type as u8,
+                timestamp: timestamp.to_string(),
+                metadata: zero_hash.to_string(),
+                builder: builder.to_string(),
+                signature,
+            },
         })
     }
 }
@@ -475,17 +479,17 @@ mod tests {
             .duration_since(UNIX_EPOCH)
             .unwrap()
             .as_millis();
-        let timestamp = order.timestamp.parse::<u128>().unwrap();
+        let timestamp = order.order.timestamp.parse::<u128>().unwrap();
         assert!(timestamp >= before);
         assert!(timestamp <= after);
         assert!(timestamp >= 1_000_000_000_000);
-        assert_eq!(order.expiration, "123");
+        assert_eq!(order.order.expiration, "123");
         assert_eq!(
-            order.builder,
+            order.order.builder,
             "0x0000000000000000000000000000000000000000000000000000000000000000"
         );
         assert_eq!(
-            order.metadata,
+            order.order.metadata,
             "0x0000000000000000000000000000000000000000000000000000000000000000"
         );
     }
@@ -512,13 +516,38 @@ mod tests {
             .unwrap();
 
         assert_eq!(
-            order.builder,
+            order.order.builder,
             "0x0707070707070707070707070707070707070707070707070707070707070707"
         );
         assert_eq!(
-            order.metadata,
+            order.order.metadata,
             "0x0000000000000000000000000000000000000000000000000000000000000000"
         );
+    }
+
+    #[test]
+    fn test_signed_order_includes_expected_order_id() {
+        let signer: PrivateKeySigner =
+            "0x1234567890123456789012345678901234567890123456789012345678901234"
+                .parse()
+                .unwrap();
+        let order_builder = OrderBuilder::new(signer, None, None);
+        let signed = order_builder
+            .build_signed_order(
+                "123456".to_string(),
+                Side::BUY,
+                137,
+                Address::from_str(EXCHANGE_V2).unwrap(),
+                1_000_000,
+                2_000_000,
+                0,
+                B256::ZERO,
+            )
+            .unwrap();
+
+        assert!(signed.expected_order_id.starts_with("0x"));
+        assert_eq!(signed.expected_order_id.len(), 66);
+        assert_eq!(signed.order.signature.len(), 132);
     }
 
     #[test]

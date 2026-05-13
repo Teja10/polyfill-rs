@@ -115,7 +115,7 @@ async fn main() -> Result<()> {
     };
     let signed_order = client.create_order(&order_args, 0, Some(&options)).await?;
     let body = PostOrder::with_post_only(
-        signed_order.clone(),
+        signed_order.order.clone(),
         api_creds.api_key.clone(),
         OrderType::GTC,
         true,
@@ -124,7 +124,7 @@ async fn main() -> Result<()> {
     println!("V1-field absence check: taker=false nonce=false feeRateBps=false");
 
     let post_response = client
-        .post_order_with_options(signed_order, OrderType::GTC, true)
+        .post_order_with_options(signed_order.order, OrderType::GTC, true)
         .await?;
     println!("post response: {}", post_response);
 

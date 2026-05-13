@@ -9,7 +9,9 @@ use crate::http_config::{
     create_colocated_client, create_internet_client, create_optimized_client, prewarm_connections,
     prewarm_order_endpoint,
 };
-use crate::types::{OrderOptions, PostOrder, PostOrderArgs, SignedOrderRequest, WssAuth};
+use crate::types::{
+    OrderOptions, PostOrder, PostOrderArgs, SignedOrderRequest, SignedOrderWithHash, WssAuth,
+};
 use alloy_primitives::U256;
 use alloy_signer_local::PrivateKeySigner;
 use reqwest::header::HeaderName;
@@ -853,7 +855,7 @@ impl ClobClient {
         order_args: &OrderArgs,
         expiration: u64,
         options: Option<&OrderOptions>,
-    ) -> Result<SignedOrderRequest> {
+    ) -> Result<SignedOrderWithHash> {
         let order_builder = self
             .order_builder
             .as_ref()
@@ -916,7 +918,7 @@ impl ClobClient {
         &self,
         order_args: &crate::types::MarketOrderArgs,
         options: Option<&OrderOptions>,
-    ) -> Result<SignedOrderRequest> {
+    ) -> Result<SignedOrderWithHash> {
         let order_builder = self
             .order_builder
             .as_ref()
@@ -1046,7 +1048,7 @@ impl ClobClient {
     /// Create and post an order in one call
     pub async fn create_and_post_order(&self, order_args: &OrderArgs) -> Result<Value> {
         let order = self.create_order(order_args, 0, None).await?;
-        self.post_order(order, OrderType::GTC).await
+        self.post_order(order.order, OrderType::GTC).await
     }
 
     /// Cancel an order
