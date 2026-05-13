@@ -552,6 +552,13 @@ pub struct SignedOrderRequest {
     pub signature: String,
 }
 
+/// Signed order request plus the deterministic CLOB V2 order hash.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SignedOrderWithHash {
+    pub order: SignedOrderRequest,
+    pub expected_order_id: String,
+}
+
 /// Post order wrapper
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]

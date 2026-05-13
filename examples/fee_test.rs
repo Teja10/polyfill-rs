@@ -233,9 +233,9 @@ async fn test_order_submission(client: &ClobClient) -> Result<()> {
 
     match client.create_order(&maker_order_args, 0, None).await {
         Ok(signed_order) => {
-            info!("    Created maker order: salt={}", signed_order.salt);
+            info!("    Created maker order: salt={}", signed_order.order.salt);
 
-            match client.post_order(signed_order, OrderType::GTC).await {
+            match client.post_order(signed_order.order, OrderType::GTC).await {
                 Ok(result) => {
                     if let Some(order_id) = result.get("orderID").and_then(|v| v.as_str()) {
                         info!("    Maker order posted: {}", order_id);
@@ -279,10 +279,10 @@ async fn test_order_submission(client: &ClobClient) -> Result<()> {
 
     match client.create_order(&taker_order_args, 0, None).await {
         Ok(signed_order) => {
-            info!("    Created taker order: salt={}", signed_order.salt);
+            info!("    Created taker order: salt={}", signed_order.order.salt);
 
             // For taker orders, use FOK (Fill-or-Kill) to ensure immediate execution
-            match client.post_order(signed_order, OrderType::FOK).await {
+            match client.post_order(signed_order.order, OrderType::FOK).await {
                 Ok(result) => {
                     if let Some(order_id) = result.get("orderID").and_then(|v| v.as_str()) {
                         let status = result

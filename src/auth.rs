@@ -8,7 +8,7 @@ use crate::types::ApiCredentials;
 use alloy_primitives::{hex::encode_prefixed, Address, U256};
 use alloy_signer::SignerSync;
 use alloy_signer_local::PrivateKeySigner;
-use alloy_sol_types::{eip712_domain, sol};
+use alloy_sol_types::{eip712_domain, sol, SolStruct};
 use base64::engine::Engine;
 use hmac::{Hmac, Mac};
 use serde::Serialize;
@@ -104,6 +104,17 @@ pub fn sign_order_message(
         .map_err(|e| PolyfillError::crypto(format!("Order signature failed: {}", e)))?;
 
     Ok(encode_prefixed(signature.as_bytes()))
+}
+
+/// Hash an order message using the same EIP-712 typed-data path as order signing.
+pub fn hash_order_message(
+    order: Order,
+    chain_id: u64,
+    verifying_contract: Address,
+) -> Result<String> {
+    let domain = order_eip712_domain(chain_id, verifying_contract);
+    let digest = order.eip712_signing_hash(&domain);
+    Ok(encode_prefixed(digest.as_slice()))
 }
 
 fn order_eip712_domain(
@@ -392,6 +403,38 @@ mod tests {
     fn test_order_eip712_domain_version_is_v2() {
         let domain = order_eip712_domain(137, Address::ZERO);
         assert_eq!(domain.version.as_deref(), Some("2"));
+    }
+
+    #[test]
+    fn test_hash_order_message_returns_v2_golden_hash() {
+        let order = Order {
+            salt: U256::from(12_345_678_901_u64),
+            maker: Address::from([0x11; 20]),
+            signer: Address::from([0x22; 20]),
+            tokenId: U256::from(987_654_321_u64),
+            makerAmount: U256::from(1_250_000_u64),
+            takerAmount: U256::from(2_500_000_u64),
+            side: 0,
+            signatureType: 1,
+            timestamp: U256::from(1_777_000_000_123_u64),
+            metadata: alloy_primitives::B256::ZERO,
+            builder: alloy_primitives::B256::from([0x33; 32]),
+        };
+
+        let hash = hash_order_message(
+            order,
+            137,
+            Address::from([
+                0x4d, 0x97, 0xdc, 0xcd, 0x97, 0xec, 0x94, 0x5f, 0x40, 0xcf, 0x65, 0xf8, 0x70, 0x97,
+                0xac, 0xe5, 0xea, 0x04, 0x7a, 0x86,
+            ]),
+        )
+        .unwrap();
+
+        assert_eq!(
+            hash,
+            "0x80afae33b3afef5503b3cf22b9bcd849b643118936ec61aab1ee0c15bc3a7978"
+        );
     }
 
     #[test]

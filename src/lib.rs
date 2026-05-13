@@ -133,6 +133,7 @@ pub use crate::types::{
     PriceUpdate,
     Rewards,
     Side,
+    SignedOrderWithHash,
     SimplifiedMarket,
     SimplifiedMarketsResponse,
     SpreadResponse,
