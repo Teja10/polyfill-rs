@@ -361,6 +361,7 @@ impl OrderBook {
         let price_ticks = decimal_to_price(price).map_err(PolyfillError::validation)?;
         let size_units = decimal_to_qty(size).map_err(PolyfillError::validation)?;
         self.apply_level_fast(side, price_ticks, size_units);
+        self.trim_depth();
         Ok(())
     }
 
@@ -1337,6 +1338,25 @@ mod tests {
         assert!(book.best_bid().is_none());
         assert_eq!(book.timestamp, timestamp);
         assert_eq!(book.sequence, 23);
+    }
+
+    #[test]
+    fn test_apply_level_discards_levels_beyond_max_depth() {
+        let mut book = OrderBook::new("test_token".to_string(), 50);
+        book.sequence = 23;
+        let timestamp = book.timestamp;
+        for index in 0..51 {
+            book.apply_level(Side::BUY, Decimal::new(10_000 - index, 4), Decimal::ONE)
+                .unwrap();
+        }
+
+        book.apply_level(Side::BUY, dec!(1), Decimal::ZERO).unwrap();
+
+        let snapshot = book.snapshot();
+        assert_eq!(snapshot.bids.len(), 49);
+        assert!(!snapshot.bids.iter().any(|level| level.price == dec!(0.995)));
+        assert_eq!(snapshot.timestamp, timestamp);
+        assert_eq!(snapshot.sequence, 23);
     }
 
     #[test]
