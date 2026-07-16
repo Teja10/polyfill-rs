@@ -348,6 +348,7 @@ impl OrderBook {
         self.trim_depth();
         Ok(())
     }
+
     /// Apply one absolute Decimal price level (size 0 removes the level).
     ///
     /// Rounds to the 1e-4 fixed-point grid; errors only on negative size or
@@ -1247,6 +1248,7 @@ mod tests {
         assert!(spread_fast.is_some()); // Should have a spread
         assert!(mid_fast.is_some()); // Should have a mid price
     }
+
     #[test]
     fn test_apply_snapshot_round_trip() {
         let timestamp = Utc::now();
@@ -1313,7 +1315,6 @@ mod tests {
             "Validation error: snapshot token_id mismatch"
         );
     }
-
 
     #[test]
     fn test_apply_level_insert_replace_and_remove() {
