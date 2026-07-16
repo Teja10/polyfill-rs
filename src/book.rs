@@ -1391,6 +1391,42 @@ mod tests {
     }
 
     #[test]
+    fn test_apply_level_rejects_tiny_negative_price() {
+        let mut book = OrderBook::new("test_token".to_string(), 10);
+
+        let error = book
+            .apply_level(Side::BUY, dec!(-0.00004), Decimal::ONE)
+            .unwrap_err();
+
+        assert_eq!(
+            error.to_string(),
+            "Validation error: Price too large or negative"
+        );
+    }
+
+    #[test]
+    fn test_apply_snapshot_rejects_tiny_negative_price() {
+        let snapshot = crate::types::OrderBook {
+            token_id: "test_token".to_string(),
+            timestamp: Utc::now(),
+            bids: vec![BookLevel {
+                price: dec!(-0.00004),
+                size: Decimal::ONE,
+            }],
+            asks: Vec::new(),
+            sequence: 1,
+        };
+        let mut book = OrderBook::new("test_token".to_string(), 10);
+
+        let error = book.apply_snapshot(&snapshot).unwrap_err();
+
+        assert_eq!(
+            error.to_string(),
+            "Validation error: Price too large or negative"
+        );
+    }
+
+    #[test]
     fn test_decimal_book_methods_reject_decimal_max() {
         let mut book = OrderBook::new("test_token".to_string(), 10);
         let level_error = book

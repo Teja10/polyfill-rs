@@ -90,6 +90,10 @@ pub const MAX_QTY: Qty = Qty::MAX / 2; // Leave room for intermediate calculatio
 /// - decimal_to_price(Decimal::from_str("1.0000")) = Ok(10000)
 /// - decimal_to_price(Decimal::from_str("0.00005")) = Ok(1) // Rounds up to min tick
 pub fn decimal_to_price(decimal: Decimal) -> std::result::Result<Price, &'static str> {
+    if decimal < Decimal::ZERO {
+        return Err("Price too large or negative");
+    }
+
     // Convert to fixed-point by multiplying by scale factor
     let scaled = decimal
         .checked_mul(Decimal::from(SCALE_FACTOR))
@@ -1466,6 +1470,20 @@ pub type OrderArgs = OrderRequest;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn decimal_to_price_rejects_tiny_negative() {
+        assert_eq!(
+            decimal_to_price(Decimal::new(-4, 5)),
+            Err("Price too large or negative")
+        );
+    }
+
+    #[test]
+    fn decimal_to_price_clamps_zero_and_tiny_nonnegative_to_minimum() {
+        assert_eq!(decimal_to_price(Decimal::ZERO), Ok(MIN_PRICE_TICKS));
+        assert_eq!(decimal_to_price(Decimal::new(4, 5)), Ok(MIN_PRICE_TICKS));
+    }
 
     #[test]
     fn decimal_to_price_rejects_decimal_max() {
