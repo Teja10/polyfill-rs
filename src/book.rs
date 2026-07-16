@@ -312,6 +312,62 @@ impl OrderBook {
         }
     }
 
+    /// Replace this book's contents from an external snapshot DTO.
+    ///
+    /// Copies `timestamp` and `sequence` from the snapshot. Levels are rounded to
+    /// the 1e-4 fixed-point grid (`SCALE_FACTOR`). Returns validation errors for
+    /// token mismatch, negative size, and every fixed-point conversion failure,
+    /// including negative or out-of-range prices and arithmetic overflow.
+    pub fn apply_snapshot(&mut self, snapshot: &crate::types::OrderBook) -> Result<()> {
+        if snapshot.token_id != self.token_id {
+            return Err(PolyfillError::validation("snapshot token_id mismatch"));
+        }
+        self.bids.clear();
+        self.asks.clear();
+        for level in &snapshot.bids {
+            if level.size < Decimal::ZERO {
+                return Err(PolyfillError::validation("negative book level size"));
+            }
+            let price = decimal_to_price(level.price).map_err(PolyfillError::validation)?;
+            let qty = decimal_to_qty(level.size).map_err(PolyfillError::validation)?;
+            if qty > 0 {
+                self.bids.insert(price, qty);
+            }
+        }
+        for level in &snapshot.asks {
+            if level.size < Decimal::ZERO {
+                return Err(PolyfillError::validation("negative book level size"));
+            }
+            let price = decimal_to_price(level.price).map_err(PolyfillError::validation)?;
+            let qty = decimal_to_qty(level.size).map_err(PolyfillError::validation)?;
+            if qty > 0 {
+                self.asks.insert(price, qty);
+            }
+        }
+        self.sequence = snapshot.sequence;
+        self.timestamp = snapshot.timestamp;
+        self.trim_depth();
+        Ok(())
+    }
+
+    /// Apply one absolute Decimal price level (size 0 removes the level).
+    ///
+    /// Rounds to the 1e-4 fixed-point grid. Returns validation errors for negative
+    /// size and every fixed-point conversion failure, including negative or
+    /// out-of-range prices and arithmetic overflow. Sequence-free: bypasses the
+    /// `apply_delta` sequence gate, which mm's per-(stream, side) parquet
+    /// `event_seq` cannot feed safely.
+    pub fn apply_level(&mut self, side: Side, price: Decimal, size: Decimal) -> Result<()> {
+        if size < Decimal::ZERO {
+            return Err(PolyfillError::validation("negative book level size"));
+        }
+        let price_ticks = decimal_to_price(price).map_err(PolyfillError::validation)?;
+        let size_units = decimal_to_qty(size).map_err(PolyfillError::validation)?;
+        self.apply_level_fast(side, price_ticks, size_units);
+        self.trim_depth();
+        Ok(())
+    }
+
     /// Apply a delta update to the book (LEGACY VERSION - for external API compatibility)
     /// A "delta" is an incremental change - like "add 100 tokens at $0.65" or "remove all at $0.70"
     ///
@@ -1195,5 +1251,255 @@ mod tests {
 
         assert!(spread_fast.is_some()); // Should have a spread
         assert!(mid_fast.is_some()); // Should have a mid price
+    }
+
+    #[test]
+    fn test_apply_snapshot_round_trip() {
+        let timestamp = Utc::now();
+        let snapshot = crate::types::OrderBook {
+            token_id: "test_token".to_string(),
+            timestamp,
+            bids: vec![
+                BookLevel {
+                    price: dec!(0.50004),
+                    size: dec!(10.00004),
+                },
+                BookLevel {
+                    price: dec!(0.49006),
+                    size: dec!(20.00006),
+                },
+            ],
+            asks: vec![
+                BookLevel {
+                    price: dec!(0.51004),
+                    size: dec!(30.00004),
+                },
+                BookLevel {
+                    price: dec!(0.52006),
+                    size: dec!(40.00006),
+                },
+            ],
+            sequence: 42,
+        };
+        let mut book = OrderBook::new("test_token".to_string(), 10);
+
+        book.apply_snapshot(&snapshot).unwrap();
+        let round_trip = book.snapshot();
+
+        assert_eq!(round_trip.token_id, "test_token");
+        assert_eq!(round_trip.timestamp, timestamp);
+        assert_eq!(round_trip.sequence, 42);
+        assert_eq!(round_trip.bids.len(), 2);
+        assert_eq!(round_trip.bids[0].price, dec!(0.5));
+        assert_eq!(round_trip.bids[0].size, dec!(10));
+        assert_eq!(round_trip.bids[1].price, dec!(0.4901));
+        assert_eq!(round_trip.bids[1].size, dec!(20.0001));
+        assert_eq!(round_trip.asks.len(), 2);
+        assert_eq!(round_trip.asks[0].price, dec!(0.51));
+        assert_eq!(round_trip.asks[0].size, dec!(30));
+        assert_eq!(round_trip.asks[1].price, dec!(0.5201));
+        assert_eq!(round_trip.asks[1].size, dec!(40.0001));
+    }
+
+    #[test]
+    fn test_apply_snapshot_rejects_token_mismatch() {
+        let snapshot = crate::types::OrderBook {
+            token_id: "other_token".to_string(),
+            timestamp: Utc::now(),
+            bids: Vec::new(),
+            asks: Vec::new(),
+            sequence: 1,
+        };
+        let mut book = OrderBook::new("test_token".to_string(), 10);
+
+        let error = book.apply_snapshot(&snapshot).unwrap_err();
+
+        assert_eq!(
+            error.to_string(),
+            "Validation error: snapshot token_id mismatch"
+        );
+    }
+
+    #[test]
+    fn test_apply_level_insert_replace_and_remove() {
+        let mut book = OrderBook::new("test_token".to_string(), 10);
+        book.sequence = 23;
+        let timestamp = book.timestamp;
+
+        book.apply_level(Side::BUY, dec!(0.50004), dec!(10))
+            .unwrap();
+        assert_eq!(book.best_bid().unwrap().price, dec!(0.5));
+        assert_eq!(book.best_bid().unwrap().size, dec!(10));
+
+        book.apply_level(Side::BUY, dec!(0.50004), dec!(20))
+            .unwrap();
+        assert_eq!(book.bids(None).len(), 1);
+        assert_eq!(book.best_bid().unwrap().size, dec!(20));
+
+        book.apply_level(Side::BUY, dec!(0.50004), Decimal::ZERO)
+            .unwrap();
+        assert!(book.best_bid().is_none());
+        assert_eq!(book.timestamp, timestamp);
+        assert_eq!(book.sequence, 23);
+    }
+
+    #[test]
+    fn test_apply_level_discards_levels_beyond_max_depth() {
+        let mut book = OrderBook::new("test_token".to_string(), 50);
+        book.sequence = 23;
+        let timestamp = book.timestamp;
+        for index in 0..51 {
+            book.apply_level(Side::BUY, Decimal::new(10_000 - index, 4), Decimal::ONE)
+                .unwrap();
+        }
+
+        book.apply_level(Side::BUY, dec!(1), Decimal::ZERO).unwrap();
+
+        let snapshot = book.snapshot();
+        assert_eq!(snapshot.bids.len(), 49);
+        assert!(!snapshot.bids.iter().any(|level| level.price == dec!(0.995)));
+        assert_eq!(snapshot.timestamp, timestamp);
+        assert_eq!(snapshot.sequence, 23);
+    }
+
+    #[test]
+    fn test_decimal_book_methods_reject_negative_size() {
+        let mut book = OrderBook::new("test_token".to_string(), 10);
+        let level_error = book
+            .apply_level(Side::SELL, dec!(0.5), dec!(-1))
+            .unwrap_err();
+        assert_eq!(
+            level_error.to_string(),
+            "Validation error: negative book level size"
+        );
+
+        let snapshot = crate::types::OrderBook {
+            token_id: "test_token".to_string(),
+            timestamp: Utc::now(),
+            bids: vec![BookLevel {
+                price: dec!(0.5),
+                size: dec!(-1),
+            }],
+            asks: Vec::new(),
+            sequence: 1,
+        };
+        let snapshot_error = book.apply_snapshot(&snapshot).unwrap_err();
+        assert_eq!(
+            snapshot_error.to_string(),
+            "Validation error: negative book level size"
+        );
+    }
+
+    #[test]
+    fn test_apply_level_rejects_tiny_negative_price() {
+        let mut book = OrderBook::new("test_token".to_string(), 10);
+
+        let error = book
+            .apply_level(Side::BUY, dec!(-0.00004), Decimal::ONE)
+            .unwrap_err();
+
+        assert_eq!(
+            error.to_string(),
+            "Validation error: Price too large or negative"
+        );
+    }
+
+    #[test]
+    fn test_apply_snapshot_rejects_tiny_negative_price() {
+        let snapshot = crate::types::OrderBook {
+            token_id: "test_token".to_string(),
+            timestamp: Utc::now(),
+            bids: vec![BookLevel {
+                price: dec!(-0.00004),
+                size: Decimal::ONE,
+            }],
+            asks: Vec::new(),
+            sequence: 1,
+        };
+        let mut book = OrderBook::new("test_token".to_string(), 10);
+
+        let error = book.apply_snapshot(&snapshot).unwrap_err();
+
+        assert_eq!(
+            error.to_string(),
+            "Validation error: Price too large or negative"
+        );
+    }
+
+    #[test]
+    fn test_decimal_book_methods_reject_decimal_max() {
+        let mut book = OrderBook::new("test_token".to_string(), 10);
+        let level_error = book
+            .apply_level(Side::BUY, Decimal::MAX, Decimal::ONE)
+            .unwrap_err();
+        assert_eq!(
+            level_error.to_string(),
+            "Validation error: Price too large or negative"
+        );
+
+        let level_size_error = book
+            .apply_level(Side::BUY, dec!(0.5), Decimal::MAX)
+            .unwrap_err();
+        assert_eq!(
+            level_size_error.to_string(),
+            "Validation error: Quantity too large"
+        );
+
+        let mut snapshot = crate::types::OrderBook {
+            token_id: "test_token".to_string(),
+            timestamp: Utc::now(),
+            bids: vec![BookLevel {
+                price: Decimal::MAX,
+                size: Decimal::ONE,
+            }],
+            asks: Vec::new(),
+            sequence: 1,
+        };
+        let snapshot_error = book.apply_snapshot(&snapshot).unwrap_err();
+        assert_eq!(
+            snapshot_error.to_string(),
+            "Validation error: Price too large or negative"
+        );
+
+        snapshot.bids[0] = BookLevel {
+            price: dec!(0.5),
+            size: Decimal::MAX,
+        };
+        let snapshot_size_error = book.apply_snapshot(&snapshot).unwrap_err();
+        assert_eq!(
+            snapshot_size_error.to_string(),
+            "Validation error: Quantity too large"
+        );
+    }
+
+    #[test]
+    fn test_apply_snapshot_fully_replaces_existing_contents() {
+        let mut book = OrderBook::new("test_token".to_string(), 10);
+        book.apply_level_fast(Side::BUY, 9000, 10000);
+        book.apply_level_fast(Side::SELL, 9500, 20000);
+        let snapshot = crate::types::OrderBook {
+            token_id: "test_token".to_string(),
+            timestamp: Utc::now(),
+            bids: vec![BookLevel {
+                price: dec!(0.4),
+                size: dec!(3),
+            }],
+            asks: vec![BookLevel {
+                price: dec!(0.6),
+                size: dec!(4),
+            }],
+            sequence: 5,
+        };
+
+        book.apply_snapshot(&snapshot).unwrap();
+
+        let bids = book.bids(None);
+        assert_eq!(bids.len(), 1);
+        assert_eq!(bids[0].price, dec!(0.4));
+        assert_eq!(bids[0].size, dec!(3));
+        let asks = book.asks(None);
+        assert_eq!(asks.len(), 1);
+        assert_eq!(asks[0].price, dec!(0.6));
+        assert_eq!(asks[0].size, dec!(4));
     }
 }

@@ -90,8 +90,14 @@ pub const MAX_QTY: Qty = Qty::MAX / 2; // Leave room for intermediate calculatio
 /// - decimal_to_price(Decimal::from_str("1.0000")) = Ok(10000)
 /// - decimal_to_price(Decimal::from_str("0.00005")) = Ok(1) // Rounds up to min tick
 pub fn decimal_to_price(decimal: Decimal) -> std::result::Result<Price, &'static str> {
+    if decimal < Decimal::ZERO {
+        return Err("Price too large or negative");
+    }
+
     // Convert to fixed-point by multiplying by scale factor
-    let scaled = decimal * Decimal::from(SCALE_FACTOR);
+    let scaled = decimal
+        .checked_mul(Decimal::from(SCALE_FACTOR))
+        .ok_or("Price too large or negative")?;
 
     // Round to nearest integer (this handles tick alignment automatically)
     let rounded = scaled.round();
@@ -131,12 +137,14 @@ pub fn price_to_decimal(ticks: Price) -> Decimal {
 /// - decimal_to_qty(Decimal::from_str("100.0")) = Ok(1000000)
 /// - decimal_to_qty(Decimal::from_str("-50.5")) = Ok(-505000)
 pub fn decimal_to_qty(decimal: Decimal) -> std::result::Result<Qty, &'static str> {
-    let scaled = decimal * Decimal::from(SCALE_FACTOR);
+    let scaled = decimal
+        .checked_mul(Decimal::from(SCALE_FACTOR))
+        .ok_or("Quantity too large")?;
     let rounded = scaled.round();
 
     let as_i64 = rounded.to_i64().ok_or("Quantity too large")?;
 
-    if as_i64.abs() > MAX_QTY {
+    if !(-MAX_QTY..=MAX_QTY).contains(&as_i64) {
         return Err("Quantity exceeds maximum");
     }
 
@@ -1458,3 +1466,42 @@ pub type Result<T> = std::result::Result<T, crate::errors::PolyfillError>;
 pub type ApiCreds = ApiCredentials;
 pub type CreateOrderOptions = OrderOptions;
 pub type OrderArgs = OrderRequest;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn decimal_to_price_rejects_tiny_negative() {
+        assert_eq!(
+            decimal_to_price(Decimal::new(-4, 5)),
+            Err("Price too large or negative")
+        );
+    }
+
+    #[test]
+    fn decimal_to_price_clamps_zero_and_tiny_nonnegative_to_minimum() {
+        assert_eq!(decimal_to_price(Decimal::ZERO), Ok(MIN_PRICE_TICKS));
+        assert_eq!(decimal_to_price(Decimal::new(4, 5)), Ok(MIN_PRICE_TICKS));
+    }
+
+    #[test]
+    fn decimal_to_price_rejects_decimal_max() {
+        assert_eq!(
+            decimal_to_price(Decimal::MAX),
+            Err("Price too large or negative")
+        );
+    }
+
+    #[test]
+    fn decimal_to_qty_rejects_decimal_max() {
+        assert_eq!(decimal_to_qty(Decimal::MAX), Err("Quantity too large"));
+    }
+
+    #[test]
+    fn decimal_to_qty_rejects_scaled_i64_min() {
+        let decimal = Decimal::from(i64::MIN) / Decimal::from(SCALE_FACTOR);
+
+        assert_eq!(decimal_to_qty(decimal), Err("Quantity exceeds maximum"));
+    }
+}
