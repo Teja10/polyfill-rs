@@ -314,9 +314,10 @@ impl OrderBook {
 
     /// Replace this book's contents from an external snapshot DTO.
     ///
-    /// Copies `timestamp` and `sequence` from the snapshot. Levels are rounded
-    /// to the 1e-4 fixed-point grid (`SCALE_FACTOR`); errors only on token
-    /// mismatch, negative size, or fixed-point overflow.
+    /// Copies `timestamp` and `sequence` from the snapshot. Levels are rounded to
+    /// the 1e-4 fixed-point grid (`SCALE_FACTOR`). Returns validation errors for
+    /// token mismatch, negative size, and every fixed-point conversion failure,
+    /// including negative or out-of-range prices and arithmetic overflow.
     pub fn apply_snapshot(&mut self, snapshot: &crate::types::OrderBook) -> Result<()> {
         if snapshot.token_id != self.token_id {
             return Err(PolyfillError::validation("snapshot token_id mismatch"));
@@ -351,9 +352,11 @@ impl OrderBook {
 
     /// Apply one absolute Decimal price level (size 0 removes the level).
     ///
-    /// Rounds to the 1e-4 fixed-point grid; errors only on negative size or
-    /// fixed-point overflow. Sequence-free: bypasses the `apply_delta` sequence
-    /// gate, which mm's per-(stream, side) parquet `event_seq` cannot feed safely.
+    /// Rounds to the 1e-4 fixed-point grid. Returns validation errors for negative
+    /// size and every fixed-point conversion failure, including negative or
+    /// out-of-range prices and arithmetic overflow. Sequence-free: bypasses the
+    /// `apply_delta` sequence gate, which mm's per-(stream, side) parquet
+    /// `event_seq` cannot feed safely.
     pub fn apply_level(&mut self, side: Side, price: Decimal, size: Decimal) -> Result<()> {
         if size < Decimal::ZERO {
             return Err(PolyfillError::validation("negative book level size"));
@@ -1384,6 +1387,52 @@ mod tests {
         assert_eq!(
             snapshot_error.to_string(),
             "Validation error: negative book level size"
+        );
+    }
+
+    #[test]
+    fn test_decimal_book_methods_reject_decimal_max() {
+        let mut book = OrderBook::new("test_token".to_string(), 10);
+        let level_error = book
+            .apply_level(Side::BUY, Decimal::MAX, Decimal::ONE)
+            .unwrap_err();
+        assert_eq!(
+            level_error.to_string(),
+            "Validation error: Price too large or negative"
+        );
+
+        let level_size_error = book
+            .apply_level(Side::BUY, dec!(0.5), Decimal::MAX)
+            .unwrap_err();
+        assert_eq!(
+            level_size_error.to_string(),
+            "Validation error: Quantity too large"
+        );
+
+        let mut snapshot = crate::types::OrderBook {
+            token_id: "test_token".to_string(),
+            timestamp: Utc::now(),
+            bids: vec![BookLevel {
+                price: Decimal::MAX,
+                size: Decimal::ONE,
+            }],
+            asks: Vec::new(),
+            sequence: 1,
+        };
+        let snapshot_error = book.apply_snapshot(&snapshot).unwrap_err();
+        assert_eq!(
+            snapshot_error.to_string(),
+            "Validation error: Price too large or negative"
+        );
+
+        snapshot.bids[0] = BookLevel {
+            price: dec!(0.5),
+            size: Decimal::MAX,
+        };
+        let snapshot_size_error = book.apply_snapshot(&snapshot).unwrap_err();
+        assert_eq!(
+            snapshot_size_error.to_string(),
+            "Validation error: Quantity too large"
         );
     }
 
